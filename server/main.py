@@ -1,88 +1,109 @@
-import argparse
-import socket
-import sys
-from common.framing import send_pdu, recv_pdu
+"""MTGNP server composition root."""
 
-DEFAULT_PORT = 4444  # Default specified in RFC Section 5.1[cite: 1]
+from __future__ import annotations
+
+import argparse
+import queue
+import threading
+import time
+from pathlib import Path
+
+from common.cards import CardCatalog
+from server.connection_manager import ConnectionEvent, ConnectionManager
+from server.game_engine import GameEngine, Outbound
+
+DEFAULT_PORT = 4444
 
 
 class GameServer:
-    def __init__(self, port: int = DEFAULT_PORT, verbose: bool = False):
-        self.port = port
-        self.verbose = verbose
-        self.clients = []  # Stores (socket, address, player_id)
-        self.server_seq_num = 1  # Server monotonically increasing sequence counter[cite: 1]
+    def __init__(self, host: str = "0.0.0.0", port: int = DEFAULT_PORT,
+                 verbose: bool = False, reconnect_timeout: float = 30.0,
+                 catalog_path: str | Path | None = None):
+        root = Path(__file__).parents[1]
+        self.events: queue.Queue[ConnectionEvent] = queue.Queue()
+        self.manager = ConnectionManager(host, port, self.events, verbose,
+                                         reconnect_timeout)
+        self.engine = GameEngine(CardCatalog.from_json(catalog_path or root / "cards.json"))
+        self.reconnect_timeout = reconnect_timeout
+        self._disconnect_deadlines: dict[str, float] = {}
+        self._stopping = threading.Event()
 
-    def start(self):
-        server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        server_sock.bind(("0.0.0.0", self.port))
-        server_sock.listen(2)
+    @property
+    def address(self): return self.manager.address
 
-        print(f"[*] MTGNP Game Server listening on port {self.port}...")
-        print(f"[*] Verbose mode is {'ENABLED' if self.verbose else 'DISABLED'}")
+    def start(self) -> None:
+        self.manager.start()
 
-        # Accept exactly two client connections[cite: 1]
-        while len(self.clients) < 2:
-            conn, addr = server_sock.accept()
-            print(f"[+] Player connection accepted from {addr}")
-            self.clients.append({"sock": conn, "addr": addr, "player_id": None})
-
-        print("[*] Two clients seated. Refusing further connections.")
-        server_sock.close()  # Refuse any 3rd connection attempts per spec[cite: 1]
-
-        self.handle_lobby()
-
-    def handle_lobby(self):
-        """Processes initial PLAYER_READY PDUs in LOBBY state[cite: 1]."""
-        ready_count = 0
-
-        for client in self.clients:
+    def _deliver(self, outgoing: list[Outbound]) -> None:
+        for message in outgoing:
             try:
-                pdu = recv_pdu(client["sock"], verbose=self.verbose, label=f"RECV from {client['addr']}")
+                if message.recipient is None:
+                    self.manager.broadcast(message.pdu)
+                else:
+                    self.manager.send(message.recipient, message.pdu)
+            except ConnectionError:
+                continue
 
-                if pdu.get("type") == "PLAYER_READY":
-                    player_id = pdu.get("player_id")
-                    deck_list = pdu.get("deck_list", [])
+    def serve_forever(self) -> None:
+        if self.manager.listener is None:
+            self.start()
+        while not self._stopping.is_set():
+            try:
+                event = self.events.get(timeout=0.05)
+            except queue.Empty:
+                event = None
+            if event is not None:
+                if event.kind == "CONNECTED":
+                    # A reserved seat is released only after same-ID PLAYER_READY.
+                    # Merely opening a socket must not defeat the reconnect timer.
+                    continue
+                elif event.kind == "DISCONNECTED":
+                    if self.engine.state is not None:
+                        self._disconnect_deadlines[event.seat_id] = (
+                            time.monotonic() + self.reconnect_timeout)
+                elif event.kind == "ERROR" and event.error is not None:
+                    code = getattr(event.error, "code", "INVALID_JSON")
+                    self._deliver(self.engine.protocol_error(event.seat_id, code,
+                                                             str(event.error)))
+                elif event.kind == "PDU" and event.pdu is not None:
+                    outgoing = self.engine.process(event.seat_id, event.pdu)
+                    if (event.pdu.get("type") == "PLAYER_READY"
+                            and event.seat_id in self._disconnect_deadlines):
+                        if any(item.pdu.get("type") == "ERROR" for item in outgoing):
+                            self.manager.disconnect(event.seat_id)
+                        else:
+                            self._disconnect_deadlines.pop(event.seat_id, None)
+                    self._deliver(outgoing)
+            now = time.monotonic()
+            expired = [seat for seat, deadline in self._disconnect_deadlines.items()
+                       if now >= deadline]
+            for seat in expired:
+                self._disconnect_deadlines.pop(seat, None)
+                self._deliver(self.engine.connection_lost(seat))
 
-                    # Basic spec validations[cite: 1]
-                    if not (1 <= len(deck_list) <= 50):  #[cite: 1]
-                        err_pdu = {
-                            "type": "ERROR",
-                            "seq_num": pdu.get("seq_num", 1),
-                            "code": "ILLEGAL_DECK",
-                            "message": f"Deck contains {len(deck_list)} cards; must be 1 to 50.",
-                            "rejected_action": pdu,
-                        }
-                        send_pdu(client["sock"], err_pdu, verbose=self.verbose, label="SEND ERROR")
-                        continue
+    def stop(self) -> None:
+        self._stopping.set()
+        self.manager.close()
 
-                    client["player_id"] = player_id
-                    ready_count += 1
 
-                    # Send lobby update back to client[cite: 1]
-                    update_pdu = {
-                        "type": "GAME_STATE_UPDATE",
-                        "seq_num": self.server_seq_num,
-                        "state": {
-                            "phase": "LOBBY",
-                            "players_ready": ready_count,
-                            "waiting_for": ["player_2"] if ready_count == 1 else [],
-                        },
-                    }
-                    self.server_seq_num += 1
-                    send_pdu(client["sock"], update_pdu, verbose=self.verbose, label="SEND LOBBY UPDATE")
-
-            except Exception as e:
-                print(f"[-] Connection error with client: {e}")
-                sys.exit(1)
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description="MTGNP authoritative two-player server")
+    parser.add_argument("--host", default="0.0.0.0")
+    parser.add_argument("--port", type=int, default=DEFAULT_PORT)
+    parser.add_argument("--verbose", "-v", action="store_true")
+    parser.add_argument("--reconnect-timeout", type=float, default=30.0)
+    args = parser.parse_args(argv)
+    server = GameServer(args.host, args.port, args.verbose, args.reconnect_timeout)
+    server.start()
+    print(f"MTGNP server listening on {server.address[0]}:{server.address[1]}")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("Stopping server.")
+    finally:
+        server.stop()
+    return 0
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="MTGNP Game Server")
-    parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="Port to listen on")
-    parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose PDU logging")
-    args = parser.parse_args()
-
-    server = GameServer(port=args.port, verbose=args.verbose)
-    server.start()
+    raise SystemExit(main())

@@ -1,0 +1,7 @@
+__pycache__/
+*.py[cod]
+tmp/
+.worktrees/
+graphify-out/
+.superpowers/tcl-runtime/
+.superpowers/brainstorm/*/state/

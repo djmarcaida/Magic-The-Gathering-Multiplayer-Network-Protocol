@@ -1,0 +1,1 @@
+"""Authoritative MTGNP server package."""

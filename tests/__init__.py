@@ -1,0 +1,1 @@
+"""MTGNP test suite."""
