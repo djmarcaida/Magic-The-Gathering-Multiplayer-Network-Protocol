@@ -714,7 +714,12 @@ class GameEngine:
         assert self.state is not None
         old = self.state.phase
         self._clear_priority()
-        return [self._transition(old, new), *self.snapshot_updates()]
+        outgoing = [self._transition(old, new)]
+        updates = self.snapshot_updates()
+        for update in updates:
+            self.request_tokens[update.recipient] = update.pdu["seq_num"]
+        outgoing.extend(updates)
+        return outgoing
 
     def _start_turn(self, old: str, *, increment_turn: bool) -> list[Outbound]:
         assert self.state is not None
