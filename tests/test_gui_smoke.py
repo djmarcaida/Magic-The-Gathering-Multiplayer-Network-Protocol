@@ -1,8 +1,9 @@
 import tkinter as tk
 import unittest
 from pathlib import Path
+from tkinter import ttk
 
-from client.gui import GameApplication
+from client.gui import HAND_REST_WIDTH, HAND_VIEWPORT_WIDTH, GameApplication
 from client.gui_model import CardCatalog
 from client.state_store import ClientStateStore
 
@@ -20,8 +21,11 @@ class FakeController:
 
 
 class FakeNetwork:
+    def __init__(self):
+        self.close_calls = 0
+
     def close(self):
-        pass
+        self.close_calls += 1
 
 
 class GuiSmokeTests(unittest.TestCase):
@@ -54,6 +58,142 @@ class GuiSmokeTests(unittest.TestCase):
         self.assertEqual(app.turn_var.get(), "Turn 1")
         self.assertEqual(app.priority_var.get(), "Your priority")
         self.assertEqual(len(app.hand_zone.winfo_children()), 2)
+
+    def test_phase_strip_exposes_flow_arrows_and_neighboring_phases(self):
+        catalog = CardCatalog.from_path(ROOT / "cards.json")
+        store = ClientStateStore()
+        app = GameApplication(self.root, catalog=catalog,
+                              asset_dir=ROOT / "client" / "assets" / "cards")
+        app.attach_session("p1", FakeController(), store, FakeNetwork())
+
+        store.apply_pdu({"type": "GAME_STATE_UPDATE", "seq_num": 7,
+                         "state": self._state()})
+        self.root.update_idletasks()
+
+        self.assertEqual(app.previous_phase_var.get(), "Draw")
+        self.assertEqual(app.phase_var.get(), "Pre-combat main")
+        self.assertEqual(app.next_phase_var.get(), "Begin combat")
+        self.assertTrue(app.phase_before_arrow.find_all())
+        self.assertTrue(app.phase_after_arrow.find_all())
+
+    def test_selected_hand_card_lifts_without_metadata_captions(self):
+        catalog = CardCatalog.from_path(ROOT / "cards.json")
+        store = ClientStateStore()
+        app = GameApplication(self.root, catalog=catalog,
+                              asset_dir=ROOT / "client" / "assets" / "cards")
+        app.attach_session("p1", FakeController(), store, FakeNetwork())
+        store.apply_pdu({"type": "GAME_STATE_UPDATE", "seq_num": 7,
+                         "state": self._state()})
+
+        app._toggle_card("lightning_bolt_001")
+        self.root.update_idletasks()
+
+        focused = app.hand_tiles["lightning_bolt_001"]
+        other = app.hand_tiles["mountain_001"]
+        self.assertEqual(app._focused_card_id, "lightning_bolt_001")
+        self.assertLess(focused.winfo_y(), other.winfo_y())
+        self.assertGreater(
+            app.hand_buttons["lightning_bolt_001"].winfo_reqwidth(),
+            app.hand_buttons["mountain_001"].winfo_reqwidth(),
+        )
+        selected_button = app.hand_buttons["lightning_bolt_001"]
+        self.assertEqual(selected_button._card_border_color.lower(), "#d76a5b")
+        self.assertEqual(selected_button._card_emphasis, "selected")
+        labels = [widget for widget in focused.winfo_children()
+                  if isinstance(widget, tk.Label)]
+        self.assertFalse(any(widget.cget("text").startswith("Mana:") for widget in labels))
+
+    def test_hand_hover_uses_larger_native_cards_and_scroll_only_viewport(self):
+        catalog = CardCatalog.from_path(ROOT / "cards.json")
+        store = ClientStateStore()
+        app = GameApplication(self.root, catalog=catalog,
+                              asset_dir=ROOT / "client" / "assets" / "cards")
+        app.attach_session("p1", FakeController(), store, FakeNetwork())
+        store.apply_pdu({"type": "GAME_STATE_UPDATE", "seq_num": 7,
+                         "state": self._state()})
+        self.root.update_idletasks()
+
+        button = app.hand_buttons["lightning_bolt_001"]
+        resting_width = button.winfo_reqwidth()
+        self.assertIsInstance(button, tk.Button)
+        self.assertEqual(int(app.hand_viewport.cget("width")), HAND_VIEWPORT_WIDTH)
+        self.assertGreaterEqual(resting_width, HAND_REST_WIDTH)
+
+        def descendants(widget):
+            for child in widget.winfo_children():
+                yield child
+                yield from descendants(child)
+
+        control_labels = {
+            str(widget.cget("text"))
+            for widget in descendants(app.hand_viewport.master)
+            if isinstance(widget, (tk.Button, ttk.Button, tk.Label, ttk.Label))
+        }
+        self.assertNotIn("Previous cards", control_labels)
+        self.assertNotIn("Next cards", control_labels)
+        self.assertFalse(any(isinstance(widget, ttk.Scrollbar)
+                             for widget in descendants(app._shell)))
+        self.assertFalse(hasattr(app, "_content_scrollbar"))
+
+        app._set_hand_hover("lightning_bolt_001", True)
+        self.root.update_idletasks()
+
+        self.assertEqual(button._card_emphasis, "hover")
+        self.assertGreater(button.winfo_reqwidth(), resting_width)
+
+    def test_resource_strips_show_snapshot_counts_and_potential_mana(self):
+        catalog = CardCatalog.from_path(ROOT / "cards.json")
+        store = ClientStateStore()
+        app = GameApplication(self.root, catalog=catalog,
+                              asset_dir=ROOT / "client" / "assets" / "cards")
+        app.attach_session("p1", FakeController(), store, FakeNetwork())
+        state = self._state()
+        state["battlefield"]["p1"] = [{"card_id": "mountain_003", "tapped": False}]
+        state["graveyard"]["p1"] = ["lightning_bolt_002"]
+        state["exile"]["p2"] = ["island_003"]
+        store.apply_pdu({"type": "GAME_STATE_UPDATE", "seq_num": 7, "state": state})
+        self.root.update_idletasks()
+
+        self.assertEqual(app.resource_life_var.get(), "20")
+        self.assertEqual(app.resource_graveyard_var.get(), "1")
+        self.assertEqual(app.opponent_resource_vars["exile"].get(), "1")
+        self.assertEqual(app.resource_mana_var.get(), "Potential mana: R 1")
+
+    def test_disconnect_recovery_closes_once_and_restores_prefilled_form(self):
+        catalog = CardCatalog.from_path(ROOT / "cards.json")
+        store = ClientStateStore()
+        network = FakeNetwork()
+        app = GameApplication(
+            self.root, catalog=catalog,
+            asset_dir=ROOT / "client" / "assets" / "cards",
+            host="game.local", port=4555, player_id="p1", deck_path="decks/red.json",
+        )
+        app.attach_session("p1", FakeController(), store, network)
+
+        app._connection_failed(ConnectionError("lost"), network)
+        app._connection_failed(ConnectionError("lost again"), network)
+
+        self.assertEqual(network.close_calls, 1)
+        self.assertIsNone(app.controller)
+        self.assertEqual(app.host_var.get(), "game.local")
+        self.assertEqual(app.port_var.get(), "4555")
+        self.assertEqual(app.id_var.get(), "p1")
+        self.assertEqual(app.deck_var.get(), "decks/red.json")
+        self.assertIn("try again", app.status_var.get())
+
+    def test_activity_log_keeps_only_the_latest_250_messages(self):
+        catalog = CardCatalog.from_path(ROOT / "cards.json")
+        app = GameApplication(self.root, catalog=catalog,
+                              asset_dir=ROOT / "client" / "assets" / "cards")
+        app.attach_session("p1", FakeController(), ClientStateStore(), FakeNetwork())
+
+        for value in range(255):
+            app._append_log(f"event {value}")
+
+        contents = app.activity_log.get("1.0", "end-1c")
+        self.assertNotIn("event 4\n", contents)
+        self.assertIn("event 5\n", f"{contents}\n")
+        self.assertTrue(contents.endswith("event 254"))
 
     def test_two_gui_interpreters_bind_card_images_to_their_own_window(self):
         second_root = tk.Tk()

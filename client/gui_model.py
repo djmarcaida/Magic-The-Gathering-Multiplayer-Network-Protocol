@@ -6,7 +6,7 @@ import json
 import queue
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Mapping, Sequence
 
 
 PHASE_LABELS = {
@@ -27,6 +27,24 @@ PHASE_LABELS = {
 }
 
 SUPPORTED_SPELL_EFFECTS = {"lightning_bolt", "counterspell", "unsummon", "giant_growth"}
+
+CARD_BORDER_COLORS = {
+    "W": "#F3DF9B",
+    "U": "#63A8D5",
+    "B": "#997AAF",
+    "R": "#D76A5B",
+    "G": "#63AA73",
+}
+COLORLESS_CARD_BORDER = "#AFB5B1"
+MULTICOLOR_CARD_BORDER = "#D5AD49"
+MANA_SOURCE_OUTPUTS = {
+    "mountain": ("R", 1),
+    "island": ("U", 1),
+    "forest": ("G", 1),
+    "swamp": ("B", 1),
+    "plains": ("W", 1),
+    "sol_ring": ("C", 2),
+}
 
 
 def base_card_id(instance_id: str) -> str:
@@ -134,6 +152,20 @@ class PlayerView:
 
 
 @dataclass(frozen=True)
+class ResourceSummary:
+    """Visible, server-authoritative player resources for the tabletop header."""
+
+    life: int
+    hand_count: int
+    library_count: int
+    graveyard_count: int
+    exile_count: int
+    land_played: bool
+    permanent_count: int
+    mana_sources: Mapping[str, int]
+
+
+@dataclass(frozen=True)
 class StackView:
     stack_item_id: str
     item_type: str
@@ -223,6 +255,58 @@ def _all_cards(view: GameView) -> tuple[CardView, ...]:
     return (*view.hand, *view.player.battlefield, *view.opponent.battlefield)
 
 
+def card_border_color(card: CardView) -> str:
+    """Return the semantic outline color for a card tile from catalog colors."""
+    colors = {color.upper() for color in card.colors}
+    if len(colors) > 1:
+        return MULTICOLOR_CARD_BORDER
+    if len(colors) == 1:
+        return CARD_BORDER_COLORS.get(colors.pop(), COLORLESS_CARD_BORDER)
+    return COLORLESS_CARD_BORDER
+
+
+def resource_summary(player: PlayerView) -> ResourceSummary:
+    """Project visible resources without inventing a mana pool client-side."""
+    mana_sources: dict[str, int] = {}
+    for permanent in player.battlefield:
+        if permanent.tapped:
+            continue
+        output = MANA_SOURCE_OUTPUTS.get(permanent.base_id)
+        if output is None:
+            continue
+        color, amount = output
+        mana_sources[color] = mana_sources.get(color, 0) + amount
+    return ResourceSummary(
+        life=player.life,
+        hand_count=player.hand_count,
+        library_count=player.library_count,
+        graveyard_count=player.graveyard_count,
+        exile_count=player.exile_count,
+        land_played=player.land_played,
+        permanent_count=len(player.battlefield),
+        mana_sources=mana_sources,
+    )
+
+
+def phase_neighbors(phase: str) -> tuple[str, str, str]:
+    """Return protocol-order previous, current, and next phase identifiers."""
+    phases = tuple(PHASE_LABELS)
+    try:
+        index = phases.index(phase)
+    except ValueError:
+        return phase, phase, phase
+    return phases[index - 1], phase, phases[(index + 1) % len(phases)]
+
+
+def bounded_activity_history(history: Sequence[str], message: str,
+                             *, limit: int = 250) -> tuple[str, ...]:
+    """Append one display-safe activity entry and retain only the newest items."""
+    if limit < 1:
+        raise ValueError("Activity history limit must be at least one.")
+    normalized = " ".join(str(message).splitlines()).strip() or "Event"
+    return (*tuple(history), normalized)[-limit:]
+
+
 def available_actions(view: GameView, selected_ids: list[str] | tuple[str, ...]) -> frozenset[str]:
     """Return only controls that can produce a supported request in this snapshot."""
     actions = {"concede"}
@@ -298,9 +382,10 @@ class GuiEventBridge:
     def post(self, callback: Callable, *args, **kwargs) -> None:
         self._queue.put((callback, args, kwargs))
 
-    def drain(self, on_error: Callable[[Exception], None] | None = None) -> int:
+    def drain(self, on_error: Callable[[Exception], None] | None = None,
+              *, max_callbacks: int | None = 32) -> int:
         count = 0
-        while True:
+        while max_callbacks is None or count < max_callbacks:
             try:
                 callback, args, kwargs = self._queue.get_nowait()
             except queue.Empty:
@@ -312,3 +397,4 @@ class GuiEventBridge:
                     raise
                 on_error(exc)
             count += 1
+        return count

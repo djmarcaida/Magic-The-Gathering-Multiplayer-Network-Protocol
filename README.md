@@ -22,7 +22,13 @@ python -m client.gui_main --host 127.0.0.1 --port 4444 --id player_2 --deck deck
 
 The connection options are optional for the GUI. Running `python -m client.gui_main` opens a form for the host, port, player ID, and deck file. Each client is a separate process, so the server still enforces exactly two simultaneous player connections.
 
-Select cards by clicking them. Available actions appear in the right panel according to the authoritative phase and priority state. Double-click a card to inspect its supplied rules text and larger image. Structured actions such as spell targets, mana payment, blockers, and damage order open focused prompts.
+Select cards through native Tk buttons that display cached, transparent rounded-card sprites. The hand shows four large overlapping card positions at a time and scrolls directly with the mouse wheel. Hovering briefly lifts and enlarges a card; clicking keeps the larger selected state and its own card-color outline. Battlefield rows use compact previews so the full match surface stays visible without an outer window scrollbar. Card-color outlines remain visible for white, blue, black, red, green, colorless, and multicolor cards. The card image itself carries the name, cost, type, rules, and combat values, so the desktop client does not duplicate that metadata in captions or a separate details panel.
+
+Each player's public life, hand, library, graveyard, and exile counts sit directly above that player's battlefield. Your strip also shows land-play status, permanent count, and colored `Potential mana` pips. Potential mana is not a client-side mana pool: it is a display-only count of the untapped Mountain, Island, Forest, Swamp, Plains, and Sol Ring sources the server currently recognizes.
+
+The top phase strip shows the previous phase, an arrow, the current phase, another arrow, and the next phase. Available actions and activity remain beside the board, and all three card rows support wheel navigation without visible scrollbars. If the transport fails, the client closes the failed session and restores the connection form with the previous host, port, player ID, and deck values.
+
+Keyboard navigation uses `Tab` to move focus and `Enter` or `Space` to select a focused card. `Escape` cancels dialogs, `Return` confirms target, blocker, and damage-order prompts, and `Up`/`Down` reorder combat damage. Structured actions such as spell targets, blockers, and damage order open focused prompts.
 
 ## Terminal client
 
@@ -86,9 +92,9 @@ Both presentations subscribe to `ClientStateStore` and call `ClientController`; 
 
 - Lobby setup, unique IDs, supplied-instance deck validation (1–50 cards), server shuffle, 20 life, and random first player
 - London-style reroll mulligans, including short-deck handling and card-bottom validation
-- Required phase cycle from Untap through Cleanup; first player skips the first-turn draw
+- Required phase cycle from Untap through Cleanup; Untap and Cleanup are automatic and priority-free, and the first player skips the first-turn draw
 - One land per turn, declared color-count payment, atomic server selection/tapping of mana sources, untap and temporary-effect cleanup
-- Server-granted request tokens, active/non-active priority transfer, two-pass advancement, and LIFO stack resolution
+- Server-granted request tokens, active/non-active priority transfer, timeout-as-pass enforcement, two-pass advancement, and LIFO stack resolution
 - Legal targets are checked when cast and again at resolution; invalidated spells fizzle
 - Attackers, blockers, multiple-blocker damage order, first strike/double-strike engine support, simultaneous damage, lethal state checks, and no trample carry-over
 - `LIFE_ZERO`, `DECK_EMPTY`, `CONCEDE`, and `DISCONNECT` game-over reasons
@@ -118,7 +124,7 @@ The suite covers framing, every PDU contract, catalog totals, hidden information
 - Opening hands draw up to the cards available. A short-deck mulligan bottoms no more cards than the hand contains.
 - Reconnection reuses the existing `PLAYER_READY` PDU with the same player ID because the supplied protocol defines no separate reconnect PDU.
 - An attacker blocked by multiple creatures assigns damage in submitted order up to remaining lethal toughness; this required baseline does not carry excess damage to the defending player.
-- Combat damage remains marked through End of Combat and is cleared during Cleanup.
+- Combat damage remains marked during End of Combat, is cleared when that step closes, and is cleared again idempotently during Cleanup.
 
 ## Work and AI disclosure
 

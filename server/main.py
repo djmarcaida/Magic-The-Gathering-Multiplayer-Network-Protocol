@@ -80,6 +80,7 @@ class GameServer:
             for seat in expired:
                 self._disconnect_deadlines.pop(seat, None)
                 self._deliver(self.engine.connection_lost(seat))
+            self._deliver(self.engine.expire_priority(now))
 
     def stop(self) -> None:
         self._stopping.set()

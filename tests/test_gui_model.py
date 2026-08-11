@@ -1,14 +1,21 @@
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 from client.gui_model import (
     CardCatalog,
     GameView,
     GuiEventBridge,
+    PHASE_LABELS,
     available_actions,
     base_card_id,
+    bounded_activity_history,
+    card_border_color,
     legal_target_options,
+    phase_neighbors,
+    resource_summary,
 )
+from server.game_state import Phase
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -71,6 +78,96 @@ class GuiModelTests(unittest.TestCase):
         self.assertEqual(drained, 2)
         self.assertEqual(seen, ["later state"])
         self.assertEqual(str(errors[0]), "broken callback")
+
+    def test_event_bridge_leaves_callbacks_for_the_next_tick_when_bounded(self):
+        bridge = GuiEventBridge()
+        seen = []
+        for value in range(3):
+            bridge.post(seen.append, value)
+
+        self.assertEqual(bridge.drain(max_callbacks=2), 2)
+        self.assertEqual(seen, [0, 1])
+        self.assertEqual(bridge.drain(max_callbacks=2), 1)
+        self.assertEqual(seen, [0, 1, 2])
+
+    def test_event_bridge_defaults_to_a_bounded_tick(self):
+        bridge = GuiEventBridge()
+        seen = []
+        for value in range(33):
+            bridge.post(seen.append, value)
+
+        self.assertEqual(bridge.drain(), 32)
+        self.assertEqual(seen, list(range(32)))
+        self.assertEqual(bridge.drain(), 1)
+        self.assertEqual(seen, list(range(33)))
+
+    def test_activity_history_retains_only_the_newest_entries(self):
+        history = ()
+        for value in range(255):
+            history = bounded_activity_history(history, f"event {value}", limit=250)
+
+        self.assertEqual(len(history), 250)
+        self.assertEqual(history[0], "event 5")
+        self.assertEqual(history[-1], "event 254")
+
+    def test_activity_history_flattens_multiline_messages(self):
+        history = bounded_activity_history((), "first line\nsecond line", limit=250)
+
+        self.assertEqual(history, ("first line second line",))
+
+    def test_card_border_color_uses_catalog_colors(self):
+        catalog = CardCatalog.from_path(ROOT / "cards.json")
+        expected = {
+            "plains_001": "#F3DF9B",
+            "island_001": "#63A8D5",
+            "swamp_001": "#997AAF",
+            "mountain_001": "#D76A5B",
+            "forest_001": "#63AA73",
+            "sol_ring_001": "#AFB5B1",
+        }
+        for card_id, color in expected.items():
+            state = self._state()
+            state["hand"]["p1"] = [card_id]
+            card = GameView.from_state("p1", state, catalog).hand[0]
+            with self.subTest(card_id=card_id):
+                self.assertEqual(card_border_color(card), color)
+
+        multicolor = replace(card, colors=("R", "G"))
+        self.assertEqual(card_border_color(multicolor), "#D5AD49")
+
+    def test_resource_summary_counts_only_untapped_supported_mana_sources(self):
+        catalog = CardCatalog.from_path(ROOT / "cards.json")
+        state = self._state()
+        state["battlefield"]["p1"] = [
+            {"card_id": "mountain_001", "tapped": False},
+            {"card_id": "mountain_002", "tapped": True},
+            {"card_id": "forest_001", "tapped": False},
+            {"card_id": "plains_001", "tapped": False},
+            {"card_id": "island_001", "tapped": False},
+            {"card_id": "swamp_001", "tapped": False},
+            {"card_id": "sol_ring_001", "tapped": False},
+            {"card_id": "llanowar_elves_001", "tapped": False},
+        ]
+        summary = resource_summary(GameView.from_state("p1", state, catalog).player)
+
+        self.assertEqual(summary.mana_sources,
+                         {"R": 1, "G": 1, "W": 1, "U": 1, "B": 1, "C": 2})
+        self.assertEqual(summary.permanent_count, 8)
+        self.assertEqual(summary.life, 20)
+        self.assertEqual(summary.hand_count, 2)
+        self.assertEqual(summary.library_count, 34)
+        self.assertEqual(summary.graveyard_count, 0)
+        self.assertEqual(summary.exile_count, 0)
+        self.assertFalse(summary.land_played)
+
+    def test_phase_neighbors_use_the_protocol_phase_order(self):
+        self.assertEqual(tuple(PHASE_LABELS), tuple(phase.value for phase in Phase))
+        self.assertEqual(
+            phase_neighbors("PRECOMBAT_MAIN"),
+            ("DRAW", "PRECOMBAT_MAIN", "BEGIN_COMBAT"),
+        )
+        self.assertEqual(phase_neighbors("UNTAP"), ("CLEANUP", "UNTAP", "UPKEEP"))
+        self.assertEqual(phase_neighbors("CLEANUP"), ("END_STEP", "CLEANUP", "UNTAP"))
 
     def test_available_actions_hide_unsupported_and_wrong_phase_controls(self):
         catalog = CardCatalog.from_path(ROOT / "cards.json")

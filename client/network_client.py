@@ -21,7 +21,10 @@ class ClientNetwork:
         self._callbacks = []
         self._disconnect_callbacks = []
         self._send_lock = threading.Lock()
+        self._socket_lock = threading.Lock()
+        self._disconnect_lock = threading.Lock()
         self._closed = threading.Event()
+        self._disconnect_notified = threading.Event()
         self._reader_thread: threading.Thread | None = None
         self._heartbeat_thread: threading.Thread | None = None
         self._heartbeat_seq = 1_000_000
@@ -31,10 +34,17 @@ class ClientNetwork:
     def subscribe_disconnect(self, callback): self._disconnect_callbacks.append(callback)
 
     def connect(self) -> None:
+        if self._closed.is_set():
+            raise ConnectionError("client is closed")
         if self.sock is not None:
             return
-        self.sock = socket.create_connection((self.host, self.port))
-        self._reader_thread = threading.Thread(target=self._receive_loop,
+        sock = socket.create_connection((self.host, self.port))
+        with self._socket_lock:
+            if self._closed.is_set():
+                sock.close()
+                raise ConnectionError("client closed while connecting")
+            self.sock = sock
+        self._reader_thread = threading.Thread(target=self._receive_loop, args=(sock,),
                                                 name="mtgnp-client-reader", daemon=True)
         self._reader_thread.start()
         if self.heartbeat_interval > 0:
@@ -48,34 +58,50 @@ class ClientNetwork:
         with self._send_lock:
             send_pdu(self.sock, pdu, verbose=self.verbose, label="SEND")
 
-    def _receive_loop(self) -> None:
+    def _receive_loop(self, sock: socket.socket) -> None:
         try:
             while not self._closed.is_set():
-                pdu = recv_pdu(self.sock, verbose=self.verbose, label="RECV")
+                pdu = recv_pdu(sock, verbose=self.verbose, label="RECV")
                 if pdu.get("type") == "PONG":
                     self.last_pong = time.monotonic()
                 for callback in tuple(self._callbacks):
                     callback(pdu)
         except (ConnectionError, OSError) as exc:
-            if not self._closed.is_set():
-                for callback in tuple(self._disconnect_callbacks):
-                    callback(exc)
+            self._notify_disconnect(exc)
+            self.close()
+
+    def _notify_disconnect(self, exc: Exception) -> None:
+        if self._closed.is_set():
+            return
+        with self._disconnect_lock:
+            if self._closed.is_set() or self._disconnect_notified.is_set():
+                return
+            self._disconnect_notified.set()
+        for callback in tuple(self._disconnect_callbacks):
+            callback(exc)
 
     def _heartbeat_loop(self) -> None:
         while not self._closed.wait(self.heartbeat_interval):
             if time.monotonic() - self.last_pong > self.heartbeat_timeout:
                 exc = TimeoutError("server heartbeat timed out")
-                for callback in tuple(self._disconnect_callbacks): callback(exc)
+                self._notify_disconnect(exc)
                 self.close()
                 return
-            self.send({"type": "PING", "seq_num": self._heartbeat_seq,
-                       "timestamp": time.time()})
+            try:
+                self.send({"type": "PING", "seq_num": self._heartbeat_seq,
+                           "timestamp": time.time()})
+            except (ConnectionError, OSError) as exc:
+                self._notify_disconnect(exc)
+                self.close()
+                return
             self._heartbeat_seq += 1
 
     def close(self) -> None:
-        if self._closed.is_set(): return
-        self._closed.set()
-        sock, self.sock = self.sock, None
+        with self._socket_lock:
+            if self._closed.is_set():
+                return
+            self._closed.set()
+            sock, self.sock = self.sock, None
         if sock is not None:
             try:
                 sock.shutdown(socket.SHUT_RDWR)

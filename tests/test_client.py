@@ -1,6 +1,7 @@
 import socket
 import threading
 import unittest
+from unittest.mock import Mock, patch
 
 from client.controller import ClientController
 from client.network_client import ClientNetwork
@@ -93,6 +94,22 @@ class ClientLayerTests(unittest.TestCase):
         self.assertEqual(received[0]["type"], "PONG")
         network.send({"type": "PING", "seq_num": 3, "timestamp": 2.0})
         self.assertEqual(recv_pdu(server_sock)["seq_num"], 3)
+
+    def test_network_client_discards_a_socket_that_finishes_connecting_after_close(self):
+        network = ClientNetwork("127.0.0.1", 4444)
+        late_socket = Mock()
+
+        def finish_after_close(_address):
+            network.close()
+            return late_socket
+
+        with patch("client.network_client.socket.create_connection",
+                   side_effect=finish_after_close), self.assertRaisesRegex(
+                       ConnectionError, "closed while connecting"):
+            network.connect()
+
+        self.assertIsNone(network.sock)
+        late_socket.close.assert_called_once_with()
 
 
 if __name__ == "__main__":

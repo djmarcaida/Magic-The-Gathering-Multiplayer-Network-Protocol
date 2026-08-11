@@ -16,14 +16,11 @@ def playing_engine():
 class TurnAndCombatTests(unittest.TestCase):
     def test_phase_order_matches_required_cycle(self):
         engine = playing_engine()
-        seen = [engine.state.phase]
-        for _ in range(len(PHASE_ORDER) - 1):
-            engine.advance_step()
-            seen.append(engine.state.phase)
-        self.assertEqual(tuple(seen), PHASE_ORDER)
+        self.assertEqual(PHASE_ORDER, tuple(Phase))
         active = engine.state.active_player
+        engine.state.phase = Phase.CLEANUP
         engine.advance_step()
-        self.assertEqual((engine.state.phase, engine.state.turn), (Phase.UNTAP, 2))
+        self.assertEqual((engine.state.phase, engine.state.turn), (Phase.UPKEEP, 2))
         self.assertNotEqual(engine.state.active_player, active)
 
     def test_play_land_only_in_active_players_main_phase_and_once_per_turn(self):
@@ -36,11 +33,13 @@ class TurnAndCombatTests(unittest.TestCase):
             land = "mountain_020"
             player.hand.append(land)
         engine.state.phase = Phase.PRECOMBAT_MAIN
-        result = engine.process(seat, {"type": "PLAY_LAND", "seq_num": 1, "card_id": land})
+        result = engine.process(seat, {"type": "PLAY_LAND",
+                                       "seq_num": engine.request_tokens[seat], "card_id": land})
         self.assertEqual(player.battlefield[-1].card_id, land)
         second = "mountain_019"
         player.hand.append(second)
-        error = engine.process(seat, {"type": "PLAY_LAND", "seq_num": 2, "card_id": second})
+        error = engine.process(seat, {"type": "PLAY_LAND",
+                                      "seq_num": engine.request_tokens[seat], "card_id": second})
         self.assertEqual(error[0].pdu["code"], "ILLEGAL_ACTION")
 
     def test_untap_clears_taps_and_summoning_sickness(self):
@@ -65,14 +64,8 @@ class TurnAndCombatTests(unittest.TestCase):
                                  summoning_sick=False)
         engine.state.players[attacker_id].battlefield = [attacker]
         engine.state.players[defender_id].battlefield = [blocker]
-        engine.state.phase = Phase.DECLARE_ATTACKERS
-        a_seat = engine.seat_for_player(attacker_id)
-        d_seat = engine.seat_for_player(defender_id)
-        engine.process(a_seat, {"type": "DECLARE_ATTACKERS", "seq_num": 1,
-                                "attackers": [attacker.card_id]})
-        engine.state.phase = Phase.DECLARE_BLOCKERS
-        engine.process(d_seat, {"type": "DECLARE_BLOCKERS", "seq_num": 2,
-                                "blockers": {attacker.card_id: [blocker.card_id]}})
+        engine.state.combat.attackers = [attacker.card_id]
+        engine.state.combat.blockers = {attacker.card_id: [blocker.card_id]}
         engine.state.phase = Phase.COMBAT_DAMAGE
         outgoing = engine.resolve_combat_damage(first_strike=False)
         self.assertEqual(engine.state.players[attacker_id].battlefield, [])

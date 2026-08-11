@@ -47,6 +47,19 @@ def parse_blockers(value: str) -> dict[str, list[str]]:
     return blockers
 
 
+def build_blocker_mapping(blocker_ids: Sequence[str],
+                          attacker_choices: Sequence[str | None]) -> dict[str, list[str]]:
+    """Build GUI blocker assignments only after every row has an explicit choice."""
+    if len(blocker_ids) != len(attacker_choices):
+        raise ValueError("Every selected blocker needs one attacker choice.")
+    if any(not attacker for attacker in attacker_choices):
+        raise ValueError("Choose an attacker for every selected blocker.")
+    mapping: dict[str, list[str]] = {}
+    for blocker_id, attacker_id in zip(blocker_ids, attacker_choices):
+        mapping.setdefault(str(attacker_id), []).append(str(blocker_id))
+    return mapping
+
+
 def _one(selected: Sequence[str]) -> str:
     if len(selected) != 1:
         raise ValueError("Select one card before using this action.")

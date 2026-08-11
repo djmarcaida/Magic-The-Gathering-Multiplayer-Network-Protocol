@@ -26,17 +26,21 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(illegal[0].pdu["code"], "ILLEGAL_DECK")
         self.assertIsNone(engine.state)
 
-    def test_both_keeps_begin_turn_at_untap(self):
+    def test_both_keeps_run_untap_automatically_then_open_upkeep_priority(self):
         engine = start_engine()
         for seat in ("seat_1", "seat_2"):
             token = engine.request_tokens[seat]
             outgoing = engine.process(seat, {"type": "MULLIGAN_CHOICE", "seq_num": token,
                                              "keep": True, "cards_to_bottom": []})
         self.assertEqual(engine.state.lifecycle, Lifecycle.PLAYING)
-        self.assertEqual((engine.state.turn, engine.state.phase), (1, Phase.UNTAP))
-        self.assertTrue(any(x.pdu["type"] == "PHASE_TRANSITION" for x in outgoing))
+        self.assertEqual((engine.state.turn, engine.state.phase), (1, Phase.UPKEEP))
+        transitions = [x.pdu["to_phase"] for x in outgoing
+                       if x.pdu["type"] == "PHASE_TRANSITION"]
+        self.assertEqual(transitions, ["UNTAP", "UPKEEP"])
+        grants = [x.pdu for x in outgoing if x.pdu["type"] == "PRIORITY_GRANT"]
+        self.assertEqual([x["player_id"] for x in grants], [engine.state.active_player])
 
-    def test_priority_holder_is_visible_in_the_first_post_keep_snapshot(self):
+    def test_priority_grant_follows_the_first_post_keep_snapshot(self):
         engine = start_engine()
         for seat in ("seat_1", "seat_2"):
             token = engine.request_tokens[seat]
@@ -44,27 +48,38 @@ class LifecycleTests(unittest.TestCase):
                                              "keep": True, "cards_to_bottom": []})
         holder = engine.state.active_player
         holder_seat = engine.seat_for_player(holder)
-        snapshot = next(x.pdu["state"] for x in outgoing
-                        if x.pdu["type"] == "GAME_STATE_UPDATE" and x.recipient == holder_seat)
-        self.assertEqual(snapshot["priority_holder"], holder)
-        self.assertEqual(snapshot["priority_token"], engine.request_tokens[holder_seat])
+        grant = next(x.pdu for x in outgoing
+                     if x.pdu["type"] == "PRIORITY_GRANT" and x.recipient == holder_seat)
+        self.assertEqual(grant["player_id"], holder)
+        self.assertEqual(grant["seq_num"], engine.request_tokens[holder_seat])
 
-    def test_two_consecutive_passes_advance_the_untap_phase(self):
+    def test_first_post_keep_snapshot_has_upkeep_priority_not_untap_priority(self):
         engine = start_engine()
         for seat in ("seat_1", "seat_2"):
             token = engine.request_tokens[seat]
             engine.process(seat, {"type": "MULLIGAN_CHOICE", "seq_num": token,
                                   "keep": True, "cards_to_bottom": []})
-        first = engine.state.active_player
-        second = engine.state.opponent_of(first)
-
-        engine.process(engine.seat_for_player(first),
-                       {"type": "PRIORITY_PASS", "seq_num": engine.request_tokens[engine.seat_for_player(first)]})
-        engine.process(engine.seat_for_player(second),
-                       {"type": "PRIORITY_PASS", "seq_num": engine.request_tokens[engine.seat_for_player(second)]})
-
         self.assertEqual(engine.state.phase, Phase.UPKEEP)
         self.assertEqual(engine.state.turn, 1)
+
+    def test_invalid_priority_action_reissues_the_same_priority_token(self):
+        engine = start_engine()
+        for seat in ("seat_1", "seat_2"):
+            engine.process(seat, {"type": "MULLIGAN_CHOICE",
+                                  "seq_num": engine.request_tokens[seat],
+                                  "keep": True, "cards_to_bottom": []})
+        holder = engine.state.priority_holder
+        seat = engine.seat_for_player(holder)
+        token = engine.request_tokens[seat]
+
+        outgoing = engine.process(seat, {"type": "CAST_SPELL", "seq_num": token,
+                                         "card_id": "not_in_hand", "targets": [],
+                                         "mana_payment": {}})
+
+        self.assertEqual(outgoing[0].pdu["type"], "ERROR")
+        retry = outgoing[-1].pdu
+        self.assertEqual((retry["type"], retry["seq_num"], retry["player_id"]),
+                         ("PRIORITY_GRANT", token, holder))
 
     def test_mulligan_rerolls_and_requires_bottom_count_on_keep(self):
         engine = start_engine()

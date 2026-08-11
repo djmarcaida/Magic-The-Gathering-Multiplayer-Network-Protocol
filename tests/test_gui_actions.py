@@ -1,7 +1,12 @@
 import unittest
 
 from client.controller import ClientController
-from client.gui_actions import dispatch_gui_action, parse_blockers, parse_mana
+from client.gui_actions import (
+    build_blocker_mapping,
+    dispatch_gui_action,
+    parse_blockers,
+    parse_mana,
+)
 from client.state_store import ClientStateStore
 
 
@@ -86,6 +91,21 @@ class GuiActionTests(unittest.TestCase):
                          {"attacker_001": ["blocker_001", "blocker_002"]})
         self.assertEqual(self.sender.sent[-1]["blocker_order"],
                          ["blocker_002", "blocker_001"])
+
+    def test_blocker_mapping_requires_an_explicit_attacker_for_every_blocker(self):
+        with self.assertRaisesRegex(ValueError, "Choose an attacker"):
+            build_blocker_mapping(
+                ["blocker_001", "blocker_002"],
+                ["attacker_001", None],
+            )
+
+        self.assertEqual(
+            build_blocker_mapping(
+                ["blocker_001", "blocker_002"],
+                ["attacker_002", "attacker_002"],
+            ),
+            {"attacker_002": ["blocker_001", "blocker_002"]},
+        )
 
 
 if __name__ == "__main__":
