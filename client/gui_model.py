@@ -132,7 +132,7 @@ class CardView:
             keywords=definition.keywords,
             effect=definition.effect,
             tapped=bool(permanent.get("tapped", False)),
-            summoning_sick=bool(permanent.get("summoning_sick", False)),
+            summoning_sick=bool(permanent.get("summoning_sickness", False)),
             damage=int(permanent.get("damage", 0)),
             power_modifier=int(permanent.get("power_modifier", 0)),
             toughness_modifier=int(permanent.get("toughness_modifier", 0)),
@@ -201,7 +201,7 @@ class GameView:
         def player_view(pid: str) -> PlayerView:
             permanent_records = state.get("battlefield", {}).get(pid, ())
             battlefield = tuple(
-                CardView.from_instance(item["card_id"], catalog, item)
+                CardView.from_instance(item["id"], catalog, item)
                 for item in permanent_records
             )
             return PlayerView(
@@ -209,7 +209,7 @@ class GameView:
                 life=int(life_totals.get(pid, 20)),
                 hand_count=int(state.get("hand_counts", {}).get(pid, 0)),
                 library_count=int(state.get("library_counts", {}).get(pid, 0)),
-                land_played=bool(state.get("land_played", {}).get(pid, False)),
+                land_played=bool(state.get("land_played_this_turn", False)),
                 battlefield=battlefield,
                 graveyard_count=len(state.get("graveyard", {}).get(pid, ())),
                 exile_count=len(state.get("exile", {}).get(pid, ())),

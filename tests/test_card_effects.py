@@ -94,7 +94,7 @@ class RequiredCardEffectTests(unittest.TestCase):
         lands = [f"swamp_{i:03d}" for i in range(16, 21)]
         give_cast(engine, caster, "gray_merchant_001", lands, [])
         first_resolution = pass_twice(engine)
-        self.assertEqual(engine.state.stack[-1].item_type, "TRIGGER")
+        self.assertEqual(engine.state.stack[-1].item_type, "TRIGGER_ABILITY")
         self.assertTrue(any(x.pdu["type"] == "STACK_PUSH" for x in first_resolution))
         pass_twice(engine)
         self.assertEqual(engine.state.players[opponent].life, 16)

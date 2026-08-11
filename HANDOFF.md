@@ -10,6 +10,7 @@
 - Priority ownership is synchronized to both clients after every grant or pass. Only the authoritative holder sees priority actions, and a pending or rejected pass has an explicit recoverable GUI state.
 - The turn header identifies the active player, land controls require both priority and the active player's main phase, selected hand cards stay above hovered cards, and tapped battlefield cards rotate while keeping their semantic outline.
 - On Windows, the server exclusively owns its listening address. A second server cannot silently share port 4444 and split the two clients across separate games.
+- Addressed all identified protocol-level RFC compliance gaps, ensuring exact schema match for `waiting_for`, `FIZZLE`, `TRIGGER_ABILITY`, `id`, `land_played_this_turn`, and `summoning_sickness`. The GUI model layer (`gui_model.py`) was also updated to consume the corrected wire-format field names.
 
 ## Running the project
 
@@ -31,7 +32,7 @@ The desktop client requires Python's optional Tcl/Tk component.
 
 ## Verification completed on 2026-08-12
 
-- `python -m unittest discover -s tests` — 112 tests passed with Tcl/Tk enabled.
+- `python -m unittest discover -s tests` — 112 tests passed with Tcl/Tk enabled, fully verifying the updated RFC schemas.
 - The real-loopback regression starts one server and two TCP clients, completes mulligan setup, transfers opening priority to the other player, and verifies that both projections agree while only the new holder retains a token.
 - The duplicate-listener regression verifies that a second server cannot bind the first server's address.
 - A live occupied-port check produced the intended clear startup error instead of creating another listener.

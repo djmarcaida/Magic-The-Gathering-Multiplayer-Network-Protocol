@@ -224,7 +224,7 @@ class GuiSmokeTests(unittest.TestCase):
                               asset_dir=ROOT / "client" / "assets" / "cards")
         app.attach_session("p1", FakeController(), store, FakeNetwork())
         state = self._state()
-        state["battlefield"]["p1"] = [{"card_id": "mountain_003", "tapped": False}]
+        state["battlefield"]["p1"] = [{"id": "mountain_003", "tapped": False}]
         state["graveyard"]["p1"] = ["lightning_bolt_002"]
         state["exile"]["p2"] = ["island_003"]
         store.apply_pdu({"type": "GAME_STATE_UPDATE", "seq_num": 7, "state": state})
@@ -242,7 +242,7 @@ class GuiSmokeTests(unittest.TestCase):
                               asset_dir=ROOT / "client" / "assets" / "cards")
         app.attach_session("p1", FakeController(), store, FakeNetwork())
         state = self._state()
-        state["battlefield"]["p1"] = [{"card_id": "mountain_003", "tapped": False}]
+        state["battlefield"]["p1"] = [{"id": "mountain_003", "tapped": False}]
         store.apply_pdu({"type": "GAME_STATE_UPDATE", "seq_num": 7, "state": state})
         app._toggle_card("mountain_003")
         self.root.update_idletasks()
@@ -257,7 +257,7 @@ class GuiSmokeTests(unittest.TestCase):
 
         tapped_state = self._state()
         tapped_state["battlefield"]["p1"] = [
-            {"card_id": "mountain_003", "tapped": True}]
+            {"id": "mountain_003", "tapped": True}]
         store.apply_pdu({"type": "GAME_STATE_UPDATE", "seq_num": 8,
                          "state": tapped_state})
         self.root.update_idletasks()
@@ -278,7 +278,7 @@ class GuiSmokeTests(unittest.TestCase):
 
         untapped_state = self._state()
         untapped_state["battlefield"]["p1"] = [
-            {"card_id": "mountain_003", "tapped": False}]
+            {"id": "mountain_003", "tapped": False}]
         store.apply_pdu({"type": "GAME_STATE_UPDATE", "seq_num": 9,
                          "state": untapped_state})
         self.root.update_idletasks()

@@ -115,7 +115,17 @@ class GameState:
 
     def visible_to(self, player_id: str) -> dict[str, object]:
         def public_permanent(permanent: PermanentState) -> dict[str, object]:
-            return asdict(permanent)
+            d: dict[str, object] = {
+                "id": permanent.card_id,
+                "owner": permanent.owner,
+                "controller": permanent.controller,
+                "tapped": permanent.tapped,
+                "summoning_sickness": permanent.summoning_sick,
+                "damage": permanent.damage,
+                "power_modifier": permanent.power_modifier,
+                "toughness_modifier": permanent.toughness_modifier,
+            }
+            return d
 
         return {
             "lifecycle": self.lifecycle.value,
@@ -129,7 +139,7 @@ class GameState:
             "hand": {player_id: list(self.players[player_id].hand)},
             "hand_counts": {pid: len(p.hand) for pid, p in self.players.items()},
             "library_counts": {pid: len(p.library) for pid, p in self.players.items()},
-            "land_played": {pid: p.land_played for pid, p in self.players.items()},
+            "land_played_this_turn": self.players[self.active_player].land_played,
             "battlefield": {pid: [public_permanent(x) for x in p.battlefield]
                             for pid, p in self.players.items()},
             "graveyard": {pid: list(p.graveyard) for pid, p in self.players.items()},

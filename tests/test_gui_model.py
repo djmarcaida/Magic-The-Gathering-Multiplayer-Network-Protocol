@@ -139,14 +139,14 @@ class GuiModelTests(unittest.TestCase):
         catalog = CardCatalog.from_path(ROOT / "cards.json")
         state = self._state()
         state["battlefield"]["p1"] = [
-            {"card_id": "mountain_001", "tapped": False},
-            {"card_id": "mountain_002", "tapped": True},
-            {"card_id": "forest_001", "tapped": False},
-            {"card_id": "plains_001", "tapped": False},
-            {"card_id": "island_001", "tapped": False},
-            {"card_id": "swamp_001", "tapped": False},
-            {"card_id": "sol_ring_001", "tapped": False},
-            {"card_id": "llanowar_elves_001", "tapped": False},
+            {"id": "mountain_001", "tapped": False},
+            {"id": "mountain_002", "tapped": True},
+            {"id": "forest_001", "tapped": False},
+            {"id": "plains_001", "tapped": False},
+            {"id": "island_001", "tapped": False},
+            {"id": "swamp_001", "tapped": False},
+            {"id": "sol_ring_001", "tapped": False},
+            {"id": "llanowar_elves_001", "tapped": False},
         ]
         summary = resource_summary(GameView.from_state("p1", state, catalog).player)
 
@@ -172,7 +172,7 @@ class GuiModelTests(unittest.TestCase):
     def test_available_actions_hide_unsupported_and_wrong_phase_controls(self):
         catalog = CardCatalog.from_path(ROOT / "cards.json")
         state = self._state()
-        state["land_played"] = {"p1": False, "p2": False}
+        state["land_played_this_turn"] = False
         view = GameView.from_state("p1", state, catalog)
 
         self.assertIn("play_land", available_actions(view, ["mountain_001"]))
@@ -197,8 +197,8 @@ class GuiModelTests(unittest.TestCase):
         catalog = CardCatalog.from_path(ROOT / "cards.json")
         state = self._state()
         state["battlefield"]["p2"] = [{
-            "card_id": "ornithopter_001", "owner": "p2", "controller": "p2",
-            "tapped": False, "summoning_sick": False, "damage": 0,
+            "id": "ornithopter_001", "owner": "p2", "controller": "p2",
+            "tapped": False, "summoning_sickness": False, "damage": 0,
             "power_modifier": 0, "toughness_modifier": 0,
         }]
         state["stack"] = [{"stack_item_id": "stk_4", "item_type": "SPELL",
@@ -228,10 +228,10 @@ class GuiModelTests(unittest.TestCase):
             "hand": {"p1": ["mountain_001", "lightning_bolt_003"]},
             "hand_counts": {"p1": 2, "p2": 4},
             "library_counts": {"p1": 34, "p2": 35},
-            "land_played": {"p1": False, "p2": False},
+            "land_played_this_turn": False,
             "battlefield": {
-                "p1": [{"card_id": "mountain_002", "owner": "p1", "controller": "p1",
-                         "tapped": True, "summoning_sick": False, "damage": 0,
+                "p1": [{"id": "mountain_002", "owner": "p1", "controller": "p1",
+                         "tapped": True, "summoning_sickness": False, "damage": 0,
                          "power_modifier": 0, "toughness_modifier": 0}],
                 "p2": [],
             },

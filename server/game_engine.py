@@ -127,9 +127,14 @@ class GameEngine:
             raise ActionError("ILLEGAL_ACTION", "cannot change player identity during a game")
         self.ready_by_seat[seat] = (player_id, valid_deck)
         if len(self.ready_by_seat) < 2:
+            ready_ids = {pid for pid, _ in self.ready_by_seat.values()}
+            waiting = [f"player_{i}" for i in range(1, 3)
+                       if f"player_{i}" not in ready_ids]
+            if not waiting:
+                waiting = ["waiting"]
             return [Outbound(seat, self._pdu("GAME_STATE_UPDATE", state={
                 "lifecycle": "LOBBY", "players_ready": len(self.ready_by_seat),
-                "waiting_for": 2 - len(self.ready_by_seat),
+                "waiting_for": waiting,
             }))]
         seats = tuple(self.ready_by_seat)
         players = tuple(self.ready_by_seat[s][0] for s in seats)
@@ -471,7 +476,7 @@ class GameEngine:
         result = "RESOLVED"
         changes: list[dict[str, object]] = []
         trigger_pushed: StackItem | None = None
-        if item.item_type == "TRIGGER" and card.base_id == "gray_merchant":
+        if item.item_type == "TRIGGER_ABILITY" and card.base_id == "gray_merchant":
             devotion = sum(self.catalog.get(p.card_id).mana_cost.get("B", 0)
                            for p in self.state.players[item.controller].battlefield)
             opponent = self.state.opponent_of(item.controller)
@@ -479,7 +484,7 @@ class GameEngine:
             self.state.players[item.controller].life += devotion
             changes.append({"kind": "GRAY_MERCHANT", "amount": devotion})
         elif not self._targets_still_legal(card.base_id, item.targets):
-            result = "FIZZLED"
+            result = "FIZZLE"
         elif card.base_id == "lightning_bolt":
             target = item.targets[0]
             if target in self.state.players:
@@ -491,7 +496,7 @@ class GameEngine:
             target_id = item.targets[0]
             target = next((x for x in self.state.stack if x.stack_item_id == target_id), None)
             if target is None:
-                result = "FIZZLED"
+                result = "FIZZLE"
             else:
                 self.state.stack.remove(target)
                 self.state.players[target.controller].graveyard.append(target.source)
@@ -513,7 +518,7 @@ class GameEngine:
             self.state.players[item.controller].battlefield.append(permanent)
             changes.append({"kind": "ENTERED_BATTLEFIELD", "card_id": item.source})
             if card.base_id == "gray_merchant":
-                trigger_pushed = StackItem(f"stk_{self._stack_counter}", "TRIGGER",
+                trigger_pushed = StackItem(f"stk_{self._stack_counter}", "TRIGGER_ABILITY",
                                            item.source, item.controller, [])
                 self._stack_counter += 1
                 self.priority.push(trigger_pushed)
@@ -526,7 +531,7 @@ class GameEngine:
         if trigger_pushed is not None:
             outgoing.append(Outbound(None, self._pdu(
                 "STACK_PUSH", stack_item_id=trigger_pushed.stack_item_id,
-                item_type="TRIGGER", source=trigger_pushed.source,
+                item_type="TRIGGER_ABILITY", source=trigger_pushed.source,
                 targets=[], controller=trigger_pushed.controller)))
         zero_life = [pid for pid, player in self.state.players.items() if player.life <= 0]
         if zero_life:
