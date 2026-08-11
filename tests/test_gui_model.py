@@ -179,6 +179,11 @@ class GuiModelTests(unittest.TestCase):
         self.assertIn("cast_spell", available_actions(view, ["lightning_bolt_003"]))
         self.assertNotIn("activate_ability", available_actions(view, ["mountain_002"]))
 
+        state["priority_holder"] = "p2"
+        waiting_for_opponent = GameView.from_state("p1", state, catalog)
+        self.assertNotIn("play_land", available_actions(waiting_for_opponent, ["mountain_001"]))
+        state["priority_holder"] = "p1"
+
         state["hand"]["p1"] = ["shock_001"]
         unsupported = GameView.from_state("p1", state, catalog)
         self.assertNotIn("cast_spell", available_actions(unsupported, ["shock_001"]))

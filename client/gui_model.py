@@ -324,7 +324,8 @@ def available_actions(view: GameView, selected_ids: list[str] | tuple[str, ...])
 
     if len(selected_hand) == 1:
         card = selected_hand[0]
-        if (card.card_type == "Land" and view.is_active_player and main_phase
+        if (card.card_type == "Land" and view.has_priority
+                and view.is_active_player and main_phase
                 and not view.player.land_played and not view.stack):
             actions.add("play_land")
         elif card.card_type != "Land" and view.has_priority:

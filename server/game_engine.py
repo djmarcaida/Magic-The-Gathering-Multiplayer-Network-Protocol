@@ -245,7 +245,7 @@ class GameEngine:
                 self.priority.open(player_id, token)
             else:
                 self.priority.grant(player_id, token)
-        return [Outbound(seat, grant)]
+        return [Outbound(seat, grant), *self.snapshot_updates()]
 
     def expire_priority(self, now: float | None = None) -> list[Outbound]:
         """Treat an expired RFC priority window as a pass by its holder."""
@@ -295,7 +295,7 @@ class GameEngine:
         player.battlefield.append(PermanentState(card_id, player_id, player_id,
                                                   summoning_sick=False))
         player.land_played = True
-        return [*self.snapshot_updates(), *self._grant_priority(player_id)]
+        return self._grant_priority(player_id)
 
     def _handle_cast_spell(self, seat: str, pdu: dict[str, object]) -> list[Outbound]:
         assert self.state is not None and self.priority is not None
@@ -334,8 +334,7 @@ class GameEngine:
         outgoing = [Outbound(None, self._pdu("STACK_PUSH", stack_item_id=item.stack_item_id,
                                               item_type=item.item_type, source=item.source,
                                               targets=item.targets, controller=item.controller)),
-                    *self._grant_priority(player_id),
-                    *self.snapshot_updates()]
+                    *self._grant_priority(player_id)]
         return outgoing
 
     def _handle_attackers(self, seat: str, pdu: dict[str, object]) -> list[Outbound]:
@@ -375,12 +374,9 @@ class GameEngine:
         for permanent in selected:
             if "Vigilance" not in self.catalog.get(permanent.card_id).keywords:
                 permanent.tapped = True
-        outgoing = self.snapshot_updates()
         if not attackers:
-            outgoing.extend(self._enter_priority_phase(Phase.END_OF_COMBAT))
-        else:
-            outgoing.extend(self._grant_priority(player_id, open_window=True))
-        return outgoing
+            return self._enter_priority_phase(Phase.END_OF_COMBAT)
+        return self._grant_priority(player_id, open_window=True)
 
     def _handle_blockers(self, seat: str, pdu: dict[str, object]) -> list[Outbound]:
         assert self.state is not None
@@ -419,8 +415,7 @@ class GameEngine:
                 used.add(card_id)
             normalized[attacker] = list(blocker_ids)
         self.state.combat.blockers = normalized
-        return [*self.snapshot_updates(),
-                *self._grant_priority(self.state.active_player, open_window=True)]
+        return self._grant_priority(self.state.active_player, open_window=True)
 
     def _handle_damage_order(self, seat: str, pdu: dict[str, object]) -> list[Outbound]:
         assert self.state is not None
@@ -434,14 +429,13 @@ class GameEngine:
                 or set(order) != set(expected)):
             raise ActionError("ILLEGAL_ACTION", "damage order must contain each assigned blocker once")
         self.state.combat.damage_order[attacker] = list(order)
-        outgoing = self.snapshot_updates()
         required = {attacker_id for attacker_id, blockers in self.state.combat.blockers.items()
                     if len(blockers) > 1}
         if required.issubset(self.state.combat.damage_order):
-            outgoing.extend(self._grant_priority(player_id, open_window=True))
-        else:
-            update = next(x for x in outgoing if x.recipient == seat)
-            self.request_tokens[seat] = update.pdu["seq_num"]
+            return self._grant_priority(player_id, open_window=True)
+        outgoing = self.snapshot_updates()
+        update = next(x for x in outgoing if x.recipient == seat)
+        self.request_tokens[seat] = update.pdu["seq_num"]
         return outgoing
 
     def _handle_discard(self, seat: str, pdu: dict[str, object]) -> list[Outbound]:
@@ -709,9 +703,7 @@ class GameEngine:
                     return [transition, *self._finish(
                         self.state.opponent_of(player.player_id), player.player_id, "DECK_EMPTY")]
                 player.hand.append(player.library.pop())
-        outgoing = [transition, *self.snapshot_updates()]
-        outgoing.extend(self._grant_priority(self.state.active_player, open_window=True))
-        return outgoing
+        return [transition, *self._grant_priority(self.state.active_player, open_window=True)]
 
     def _enter_declaration_phase(self, new: Phase) -> list[Outbound]:
         assert self.state is not None

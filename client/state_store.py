@@ -29,8 +29,7 @@ class ClientStateStore:
         if pdu_type == "GAME_STATE_UPDATE":
             self.state = dict(pdu["state"])
             token = self.state.get("priority_token")
-            if isinstance(token, int):
-                self.priority_token = token
+            self.priority_token = token if isinstance(token, int) else None
             for callback in tuple(self._state_subscribers):
                 callback(dict(self.state))
         elif pdu_type == "ERROR":

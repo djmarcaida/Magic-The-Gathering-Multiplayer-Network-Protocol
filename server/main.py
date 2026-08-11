@@ -95,7 +95,12 @@ def main(argv=None) -> int:
     parser.add_argument("--reconnect-timeout", type=float, default=30.0)
     args = parser.parse_args(argv)
     server = GameServer(args.host, args.port, args.verbose, args.reconnect_timeout)
-    server.start()
+    try:
+        server.start()
+    except OSError as exc:
+        print(f"Cannot start MTGNP server on {args.host}:{args.port}: {exc}")
+        print("Close the existing server or choose a different port.")
+        return 1
     print(f"MTGNP server listening on {server.address[0]}:{server.address[1]}")
     try:
         server.serve_forever()

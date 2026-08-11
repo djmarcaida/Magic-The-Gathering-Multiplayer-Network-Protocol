@@ -18,6 +18,52 @@ def wait_for(predicate, message):
 
 
 class EndToEndTests(unittest.TestCase):
+    def test_first_priority_holder_passes_to_the_other_real_client(self):
+        server = GameServer("127.0.0.1", 0, reconnect_timeout=0.2)
+        server.start()
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        clients = []
+        try:
+            stores, controllers = [], []
+            for player_id in ("player_1", "player_2"):
+                network = ClientNetwork(*server.address)
+                store = ClientStateStore()
+                network.subscribe(store.apply_pdu)
+                network.connect()
+                clients.append(network)
+                stores.append(store)
+                controllers.append(ClientController(player_id, network, store))
+
+            controllers[0].ready(RED_DECK)
+            controllers[1].ready(BLUE_DECK)
+            wait_for(lambda: all(s.state.get("lifecycle") == "MULLIGAN" for s in stores),
+                     "both clients did not enter mulligan")
+            previous_second_seq = stores[1].last_server_seq
+            controllers[0].keep()
+            wait_for(lambda: stores[1].last_server_seq != previous_second_seq,
+                     "second client did not receive the keep update")
+            controllers[1].keep()
+            wait_for(lambda: all(s.state.get("priority_holder") for s in stores),
+                     "opening priority was not synchronized")
+
+            first_holder = stores[0].state["priority_holder"]
+            holder_index = 0 if first_holder == "player_1" else 1
+            controllers[holder_index].pass_priority()
+            expected_holder = "player_2" if first_holder == "player_1" else "player_1"
+            wait_for(
+                lambda: all(s.state.get("priority_holder") == expected_holder for s in stores),
+                "priority transfer did not reach both real clients",
+            )
+
+            self.assertIsNone(stores[holder_index].priority_token)
+            self.assertIsInstance(stores[1 - holder_index].priority_token, int)
+        finally:
+            for client in clients:
+                client.close()
+            server.stop()
+            thread.join(timeout=1)
+
     def test_two_real_clients_start_concede_and_restart_on_retained_connections(self):
         server = GameServer("127.0.0.1", 0, reconnect_timeout=0.2)
         server.start()

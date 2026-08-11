@@ -44,10 +44,17 @@ class ConnectionManager:
 
     def start(self) -> None:
         listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        listener.bind((self.host, self.port))
-        listener.listen(4)
-        listener.settimeout(0.2)
+        try:
+            if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+                listener.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+            else:
+                listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            listener.bind((self.host, self.port))
+            listener.listen(4)
+            listener.settimeout(0.2)
+        except OSError:
+            listener.close()
+            raise
         self.listener = listener
         self.address = listener.getsockname()[:2]
         self._accept_thread = threading.Thread(target=self.accept_connections,
