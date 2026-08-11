@@ -169,7 +169,8 @@ class GameEngine:
             transition = Outbound(None, self._pdu("PHASE_TRANSITION", from_phase="MULLIGAN",
                                                    to_phase="UNTAP", active_player=self.state.active_player,
                                                    turn=1))
-            return [transition, *self.snapshot_updates(), *self._grant_priority(self.state.active_player)]
+            return [transition, *self._grant_priority(self.state.active_player),
+                    *self.snapshot_updates()]
         updates = self.snapshot_updates()
         for update in updates:
             if not self.state.players[self.state.seats[update.recipient]].kept:
@@ -291,10 +292,10 @@ class GameEngine:
         self._stack_counter += 1
         self.priority.push(item)
         outgoing = [Outbound(None, self._pdu("STACK_PUSH", stack_item_id=item.stack_item_id,
-                                             item_type=item.item_type, source=item.source,
-                                             targets=item.targets, controller=item.controller)),
+                                              item_type=item.item_type, source=item.source,
+                                              targets=item.targets, controller=item.controller)),
+                    *self._grant_priority(player_id),
                     *self.snapshot_updates()]
-        outgoing.extend(self._grant_priority(player_id))
         return outgoing
 
     def _handle_attackers(self, seat: str, pdu: dict[str, object]) -> list[Outbound]:
@@ -619,4 +620,5 @@ class GameEngine:
                                                to_phase=new.value,
                                                active_player=self.state.active_player,
                                                turn=self.state.turn))
-        return [transition, *self.snapshot_updates(), *self._grant_priority(self.state.active_player)]
+        return [transition, *self._grant_priority(self.state.active_player),
+                *self.snapshot_updates()]

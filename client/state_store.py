@@ -39,5 +39,9 @@ class ClientStateStore:
         else:
             if pdu_type == "PRIORITY_GRANT":
                 self.priority_token = pdu["seq_num"]
+                self.state["priority_holder"] = pdu["player_id"]
+                self.state["priority_token"] = pdu["seq_num"]
+                for callback in tuple(self._state_subscribers):
+                    callback(dict(self.state))
             for callback in tuple(self._event_subscribers):
                 callback(dict(pdu))

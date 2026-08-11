@@ -36,6 +36,36 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual((engine.state.turn, engine.state.phase), (1, Phase.UNTAP))
         self.assertTrue(any(x.pdu["type"] == "PHASE_TRANSITION" for x in outgoing))
 
+    def test_priority_holder_is_visible_in_the_first_post_keep_snapshot(self):
+        engine = start_engine()
+        for seat in ("seat_1", "seat_2"):
+            token = engine.request_tokens[seat]
+            outgoing = engine.process(seat, {"type": "MULLIGAN_CHOICE", "seq_num": token,
+                                             "keep": True, "cards_to_bottom": []})
+        holder = engine.state.active_player
+        holder_seat = engine.seat_for_player(holder)
+        snapshot = next(x.pdu["state"] for x in outgoing
+                        if x.pdu["type"] == "GAME_STATE_UPDATE" and x.recipient == holder_seat)
+        self.assertEqual(snapshot["priority_holder"], holder)
+        self.assertEqual(snapshot["priority_token"], engine.request_tokens[holder_seat])
+
+    def test_two_consecutive_passes_advance_the_untap_phase(self):
+        engine = start_engine()
+        for seat in ("seat_1", "seat_2"):
+            token = engine.request_tokens[seat]
+            engine.process(seat, {"type": "MULLIGAN_CHOICE", "seq_num": token,
+                                  "keep": True, "cards_to_bottom": []})
+        first = engine.state.active_player
+        second = engine.state.opponent_of(first)
+
+        engine.process(engine.seat_for_player(first),
+                       {"type": "PRIORITY_PASS", "seq_num": engine.request_tokens[engine.seat_for_player(first)]})
+        engine.process(engine.seat_for_player(second),
+                       {"type": "PRIORITY_PASS", "seq_num": engine.request_tokens[engine.seat_for_player(second)]})
+
+        self.assertEqual(engine.state.phase, Phase.UPKEEP)
+        self.assertEqual(engine.state.turn, 1)
+
     def test_mulligan_rerolls_and_requires_bottom_count_on_keep(self):
         engine = start_engine()
         player = engine.state.players[engine.player_for_seat("seat_1")]
