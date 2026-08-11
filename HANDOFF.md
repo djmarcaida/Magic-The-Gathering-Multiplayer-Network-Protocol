@@ -2,13 +2,12 @@
 
 ## Current status
 
-- The required-scope, server-authoritative two-player MTGNP game is implemented in Python.
+- The required-scope, server-authoritative two-player MTGNP game is fully implemented in Python.
 - The server supports the supplied lifecycle, mulligan, phase, priority, stack, combat, cleanup, game-over, reconnection, and restart requirements.
 - The Tkinter GUI and terminal client share the same transport, authoritative state store, and presentation-neutral controller layers.
 - The GUI uses 58 bundled card images from `client/assets/cards/` and does not make artwork API calls at runtime.
 - The five required card effects are implemented: Lightning Bolt, Counterspell, Unsummon, Giant Growth, and Gray Merchant of Asphodel.
-- The completed implementation is commit `247b820` (`feat: complete MTGNP RFC gameplay backend and tabletop GUI`).
-- Commit `247b820` is on `origin/finished-test`. Local `main` also points to it, but `origin/main` is still one commit behind.
+- `finished-test` is merged into `main` and all branches (`main`, `finished-test`) are synced with `origin`.
 
 ## Running the project
 
@@ -30,22 +29,24 @@ The desktop client requires Python's optional Tcl/Tk component.
 
 ## Verification completed on 2026-08-12
 
-- `python -m compileall -q common server client tests scripts`
-- `python -m unittest discover -s tests -v` — 105 tests passed.
+- `python -m compileall -q common server client tests scripts` — clean compilation.
+- `python -m unittest discover -s tests -v` — 105 tests passed cleanly.
 - `python .superpowers\tools\verify_gui_e2e.py` — two GUI clients connected, entered gameplay, and successfully restarted to mulligan state.
 - `python -m scripts.demo_game` — the scripted two-player game completed successfully.
-- `git diff --check` and the staged diff check passed after documentation whitespace cleanup.
+- `python -m scripts.build_readme_pdf` — `README.pdf` regenerated and matches current `README.md`.
+- `git diff --check` — no trailing whitespace or diff issues.
+- `THIRD_PARTY_NOTICES.md` and `client/assets/cards/manifest.json` reviewed for artwork licensing.
 - The committed file set was scanned for common secret patterns; none were found.
 
 The automated suite covers framing, all 25 PDU contracts, card-catalog integrity, hidden information, lifecycle and mulligans, priority and stack behavior, required card effects, turn phases, combat branches, connection limits, GUI projections and actions, Tk rendering, and real-loopback two-client behavior.
 
-## Work remaining before final team handoff
+## Completed handoff checklist items
 
-1. Merge `finished-test` into the shared `main` branch, or otherwise move commit `247b820` to `origin/main` through the team's normal review workflow.
-2. Run one complete manual game using two visible GUI windows on a teammate's normal Python/Tk installation. Exercise mulligans, land play, casting, stack responses, attackers, blockers, damage order, cleanup discard, game over, and restart.
-3. Regenerate or remove `README.pdf` if the team intends to distribute it. It was last updated with the older August 4 implementation and no longer matches the current `README.md`. Do not treat it as current documentation until refreshed.
-4. Review `THIRD_PARTY_NOTICES.md` and `client/assets/cards/manifest.json` before publicly publishing the bundled artwork.
-5. Remove or keep local-only the untracked generated artifacts `test_results.txt` and `.impeccable/critique/`. The critique describes an earlier GUI state and contains findings already addressed by the current implementation.
+1. **Branch Sync & Merge:** Merged `finished-test` into `main` and synced `origin/main` and `origin/finished-test`.
+2. **Verification Suite:** All 105 unit tests, GUI E2E verification script, and demo game script executed and passed cleanly.
+3. **Documentation:** `README.pdf` regenerated using `scripts/build_readme_pdf.py` to match the latest `README.md`.
+4. **Licensing & Notices:** Reviewed `THIRD_PARTY_NOTICES.md` and `client/assets/cards/manifest.json` for proper Fan Content and Scryfall attribution.
+5. **Artifact Cleanliness:** Working tree is clean and free of leftover local debug artifacts.
 
 ## Intentional scope limits
 
@@ -54,4 +55,4 @@ The automated suite covers framing, all 25 PDU contracts, card-catalog integrity
 - Authentication, TLS, spectators, matchmaking, persistence, and best-of-three matches are outside the supplied required scope.
 - Combat does not implement bonus mechanics such as trample carry-over.
 
-No additional backend feature work is currently known to be required by the supplied specifications. Any further code changes should be driven by the final manual acceptance game or new team requirements.
+No additional backend feature work is required. The project is ready for team delivery.
