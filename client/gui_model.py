@@ -26,7 +26,7 @@ PHASE_LABELS = {
     "CLEANUP": "Cleanup",
 }
 
-SUPPORTED_SPELL_EFFECTS = {"lightning_bolt", "counterspell", "unsummon", "giant_growth"}
+SUPPORTED_SPELL_EFFECTS = {"lightning_bolt", "counterspell", "unsummon", "giant_growth", "rift_bolt", "ponder", "rampant_growth"}
 
 CARD_BORDER_COLORS = {
     "W": "#F3DF9B",
@@ -132,7 +132,7 @@ class CardView:
             keywords=definition.keywords,
             effect=definition.effect,
             tapped=bool(permanent.get("tapped", False)),
-            summoning_sick=bool(permanent.get("summoning_sickness", False)),
+            summoning_sick=bool(permanent.get("summoning_sickness", False)) and "Creature" in base_card.card_type,
             damage=int(permanent.get("damage", 0)),
             power_modifier=int(permanent.get("power_modifier", 0)),
             toughness_modifier=int(permanent.get("toughness_modifier", 0)),

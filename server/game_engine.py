@@ -317,7 +317,7 @@ class GameEngine:
                 or self.state.phase not in {Phase.PRECOMBAT_MAIN, Phase.POSTCOMBAT_MAIN}
                 or self.state.stack):
             raise ActionError("WRONG_PHASE", "non-instant spells require your empty-stack main phase")
-        supported_effects = {"lightning_bolt", "counterspell", "unsummon", "giant_growth"}
+        supported_effects = {"lightning_bolt", "counterspell", "unsummon", "giant_growth", "rift_bolt", "ponder", "rampant_growth"}
         if card.card_type in {"Instant", "Sorcery"} and card.base_id not in supported_effects:
             raise ActionError("ILLEGAL_ACTION", "this baseline does not implement that spell effect")
         targets = pdu["targets"]
@@ -485,13 +485,30 @@ class GameEngine:
             changes.append({"kind": "GRAY_MERCHANT", "amount": devotion})
         elif not self._targets_still_legal(card.base_id, item.targets):
             result = "FIZZLE"
-        elif card.base_id == "lightning_bolt":
+        elif card.base_id in {"lightning_bolt", "rift_bolt"}:
             target = item.targets[0]
             if target in self.state.players:
                 self.state.players[target].life -= 3
             else:
                 self.state.permanent(target).damage += 3
             changes.append({"kind": "DAMAGE", "target": target, "amount": 3})
+        elif card.base_id == "ponder":
+            library = self.state.players[item.controller].library
+            if library:
+                self.state.players[item.controller].hand.append(library.pop())
+                changes.append({"kind": "CARD_DRAWN", "player": item.controller})
+            else:
+                result = "FIZZLE"
+        elif card.base_id == "rampant_growth":
+            library = self.state.players[item.controller].library
+            land_idx = next((i for i, cid in enumerate(library) if self.catalog.get(cid).card_type == "Land"), None)
+            if land_idx is not None:
+                land_id = library.pop(land_idx)
+                permanent = PermanentState(land_id, item.controller, item.controller, tapped=True, summoning_sick=False)
+                self.state.players[item.controller].battlefield.append(permanent)
+                changes.append({"kind": "ENTERED_BATTLEFIELD", "card_id": land_id, "tapped": True})
+            else:
+                result = "FIZZLE"
         elif card.base_id == "counterspell":
             target_id = item.targets[0]
             target = next((x for x in self.state.stack if x.stack_item_id == target_id), None)
@@ -549,10 +566,10 @@ class GameEngine:
 
     def _validate_spell_targets(self, base_id: str, targets: list[str]) -> None:
         assert self.state is not None
-        if base_id == "lightning_bolt":
+        if base_id in {"lightning_bolt", "rift_bolt"}:
             if len(targets) != 1 or (targets[0] not in self.state.players
                                      and self.state.permanent(targets[0]) is None):
-                raise ActionError("ILLEGAL_TARGET", "Lightning Bolt requires a player or permanent target")
+                raise ActionError("ILLEGAL_TARGET", "Spell requires a player or permanent target")
         elif base_id in {"unsummon", "giant_growth"}:
             if len(targets) != 1 or self.state.permanent(targets[0]) is None:
                 raise ActionError("ILLEGAL_TARGET", "spell requires a creature target")
