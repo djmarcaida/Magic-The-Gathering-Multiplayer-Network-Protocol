@@ -15,6 +15,7 @@ class DeckValidationError(ValueError):
 
 @dataclass(frozen=True)
 class CardDefinition:
+    """Read-only rules text and base statistics for a unique MTG card."""
     base_id: str
     name: str
     card_type: str
@@ -30,6 +31,7 @@ class CardDefinition:
 
 @dataclass(frozen=True)
 class CardInstance:
+    """A specific playable copy of a CardDefinition, uniquely identified by card_id."""
     card_id: str
     copy_number: int
     definition: CardDefinition
@@ -39,6 +41,10 @@ class CardInstance:
 
 
 class CardCatalog:
+    """
+    Central repository for all card data loaded from the static JSON file.
+    Provides fast O(1) lookups for base definitions and specific instances.
+    """
     def __init__(self, definitions: Mapping[str, CardDefinition],
                  instances: Mapping[str, CardInstance]):
         self.definitions = MappingProxyType(dict(definitions))

@@ -11,6 +11,7 @@ MAX_PDU_BYTES = 65_535
 
 
 class FramingError(Exception):
+    """Raised when a PDU exceeds the max length or fails JSON encoding/decoding."""
     def __init__(self, code: str, message: str):
         super().__init__(message)
         self.code = code

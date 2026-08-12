@@ -156,6 +156,7 @@ class CardView:
 
 @dataclass(frozen=True)
 class PlayerView:
+    """Read-only projection of a single player's visible state."""
     player_id: str
     life: int
     hand_count: int
@@ -184,6 +185,7 @@ class ResourceSummary:
 
 @dataclass(frozen=True)
 class StackView:
+    """Read-only projection of an active spell or ability on the stack."""
     stack_item_id: str
     item_type: str
     source: CardView
@@ -193,6 +195,12 @@ class StackView:
 
 @dataclass(frozen=True)
 class GameView:
+    """
+    Complete read-only projection of the visible game state.
+    
+    Used by the GUI layer to render the tabletop and determine which
+    actions are legally available to the player.
+    """
     player_id: str
     opponent_id: str
     lifecycle: str

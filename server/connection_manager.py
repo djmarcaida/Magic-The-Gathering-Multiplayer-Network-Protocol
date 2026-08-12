@@ -28,6 +28,13 @@ class _Seat:
 
 
 class ConnectionManager:
+    """
+    Manages TCP listeners, socket acceptance, and per-client reader threads.
+
+    Enforces the two-seat limit, manages reconnection timeouts, and places
+    parsed incoming PDUs and connection lifecycle events onto a shared,
+    thread-safe queue for the main engine thread to process.
+    """
     def __init__(self, host: str, port: int, event_queue: queue.Queue,
                  verbose: bool = False, reconnect_timeout: float = 30.0):
         self.host = host

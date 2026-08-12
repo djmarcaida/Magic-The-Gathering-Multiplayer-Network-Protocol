@@ -16,6 +16,13 @@ DEFAULT_PORT = 4444
 
 
 class GameServer:
+    """
+    Main orchestration class for the MTGNP Game Server.
+
+    Manages the lifecycle of the TCP ConnectionManager and the GameEngine.
+    Routes raw network events into the engine and delivers the resulting
+    state changes or protocol errors back to the connected clients.
+    """
     def __init__(self, host: str = "0.0.0.0", port: int = DEFAULT_PORT,
                  verbose: bool = False, reconnect_timeout: float = 30.0,
                  catalog_path: str | Path | None = None):

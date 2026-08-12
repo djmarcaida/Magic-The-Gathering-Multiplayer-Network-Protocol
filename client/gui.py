@@ -89,7 +89,13 @@ class CardStrip:
 
 
 class GameApplication:
-    """Owns the desktop view while delegating transport and rules elsewhere."""
+    """
+    Main Tkinter presentation layer for the MTGNP client.
+
+    Manages the physical rendering of the game tabletop, translates raw
+    user interactions (clicks, mouse wheel) into logical selections, and
+    orchestrates drawing updates whenever the authoritative GameView changes.
+    """
 
     def __init__(self, root: tk.Tk, *, catalog: CardCatalog, asset_dir: str | Path,
                  host: str = "127.0.0.1", port: int = 4444,

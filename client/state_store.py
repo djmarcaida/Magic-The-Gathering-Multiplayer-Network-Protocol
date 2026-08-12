@@ -9,6 +9,13 @@ REQUEST_TOKEN_TYPES = {"GAME_STATE_UPDATE", "TRIGGER_ORDER", "TRIGGER_CHOICE"}
 
 
 class ClientStateStore:
+    """
+    Central local repository for the client's view of the game state.
+
+    Parses incoming GAME_STATE_UPDATE and PRIORITY_GRANT messages to maintain
+    the current priority token and state snapshot, then broadcasts changes to
+    all subscribed UI components.
+    """
     def __init__(self):
         self.state: dict[str, object] = {}
         self.priority_token: int | None = None

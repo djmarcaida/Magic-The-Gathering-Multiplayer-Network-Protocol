@@ -68,6 +68,12 @@ def _one(selected: Sequence[str]) -> str:
 
 def dispatch_gui_action(controller, action: str, selected: Sequence[str] = (),
                         fields: Mapping[str, object] | None = None):
+    """
+    Map raw UI events and string inputs to strongly-typed controller actions.
+
+    Parses comma-separated identifiers, mana costs, and blocker assignments
+    from user dialogs, delegating the final PDU construction to the controller.
+    """
     fields = fields or {}
     if action == "keep":
         return controller.keep(selected)

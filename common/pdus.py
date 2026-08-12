@@ -64,6 +64,12 @@ class PDUValidationError(Exception):
 
 
 def validate_pdu(pdu: Mapping[str, object], *, direction: str | None = None) -> dict[str, object]:
+    """
+    Validate the structural integrity and directionality of a parsed PDU.
+
+    Ensures the PDU type is registered, all required fields are present, and the
+    sequence number is a valid integer. Raises PDUValidationError if any checks fail.
+    """
     if not isinstance(pdu, Mapping):
         raise PDUValidationError("INVALID_JSON", "PDU must be an object")
     pdu_type = pdu.get("type")

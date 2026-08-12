@@ -9,6 +9,7 @@ from typing import Any
 
 
 class Lifecycle(str, Enum):
+    """Broad phases of a game session from lobby through completion."""
     LOBBY = "LOBBY"
     MULLIGAN = "MULLIGAN"
     PLAYING = "PLAYING"
@@ -16,6 +17,7 @@ class Lifecycle(str, Enum):
 
 
 class Phase(str, Enum):
+    """Granular steps and phases within a single turn."""
     UNTAP = "UNTAP"
     UPKEEP = "UPKEEP"
     DRAW = "DRAW"
@@ -37,6 +39,7 @@ PHASE_ORDER = tuple(Phase)
 
 @dataclass
 class PermanentState:
+    """Represents a single card instance currently on the battlefield."""
     card_id: str
     owner: str
     controller: str
@@ -49,6 +52,7 @@ class PermanentState:
 
 @dataclass
 class StackItem:
+    """Represents a spell, triggered ability, or activated ability on the stack."""
     stack_item_id: str
     item_type: str
     source: str
@@ -59,6 +63,7 @@ class StackItem:
 
 @dataclass
 class CombatState:
+    """Tracks current combat participants and damage assignment orders."""
     attackers: list[str] = field(default_factory=list)
     blockers: dict[str, list[str]] = field(default_factory=dict)
     damage_order: dict[str, list[str]] = field(default_factory=dict)
@@ -66,6 +71,7 @@ class CombatState:
 
 @dataclass
 class PlayerState:
+    """Authoritative tracker for all private and public zones of a specific player."""
     player_id: str
     life: int = 20
     library: list[str] = field(default_factory=list)
@@ -81,6 +87,12 @@ class PlayerState:
 
 @dataclass
 class GameState:
+    """
+    The single source of truth for the entire match.
+
+    Maintains all player states, turn phases, combat, and the stack.
+    Responsible for generating the filtered 'visible' state payload for clients.
+    """
     players: dict[str, PlayerState]
     seats: dict[str, str]
     first_player: str

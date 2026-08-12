@@ -20,6 +20,12 @@ def load_deck(path: str | Path) -> list[str]:
 
 
 def main(argv=None) -> int:
+    """
+    Entry point for the terminal-based client.
+
+    Parses command-line arguments, connects to the server, and starts the
+    REPL loop for text-based interaction.
+    """
     parser = argparse.ArgumentParser(description="MTGNP terminal client")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=4444)

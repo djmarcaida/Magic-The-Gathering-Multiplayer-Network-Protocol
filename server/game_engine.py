@@ -97,6 +97,13 @@ class GameEngine:
         return next(seat for seat, ready in self.ready_by_seat.items() if ready[0] == player_id)
 
     def process(self, seat_id: str, pdu: dict[str, object]) -> list[Outbound]:
+        """
+        Process an incoming protocol data unit (PDU) from a client.
+
+        Validates the message format, dispatches to the appropriate action handler
+        based on the PDU type, and returns the resulting outbound messages to be
+        sent back to the clients.
+        """
         try:
             message = validate_pdu(pdu, direction="C->S")
             if message["type"] == "PING":
@@ -219,6 +226,13 @@ class GameEngine:
         return self._finish(self.state.opponent_of(loser), loser, "CONCEDE")
 
     def _finish(self, winner: str, loser: str, reason: str) -> list[Outbound]:
+        """
+        Conclude the current game session and issue the GAME_OVER sequence.
+
+        Broadcasts a final state snapshot, then a GAME_OVER PDU indicating the
+        winner, loser, and reason, and finally clears the active game state
+        so the lobby can accept new readiness declarations.
+        """
         outgoing = []
         if self.state is not None:
             outgoing.extend(self.snapshot_updates())
@@ -243,6 +257,12 @@ class GameEngine:
         return self.snapshot_updates(seats=(seat,))
 
     def _clear_priority(self) -> None:
+        """
+        Clear the current priority token and holder state across the engine.
+
+        Used during phase transitions or stack resolution when the priority
+        window is closing or resetting.
+        """
         if self.state is not None:
             self.state.priority_holder = None
             self.state.priority_token = None
@@ -253,6 +273,13 @@ class GameEngine:
         self.priority_deadline = None
 
     def _grant_priority(self, player_id: str, *, open_window: bool = False) -> list[Outbound]:
+        """
+        Grant the priority token to a specific player.
+
+        Issues a PRIORITY_GRANT PDU to the designated player and updates the internal
+        priority stack tracker. If open_window is True, the grant marks the start
+        of a new RFC priority cycle rather than a continuation.
+        """
         assert self.state is not None
         seat = self.seat_for_player(player_id)
         grant = self._pdu("PRIORITY_GRANT", player_id=player_id,
@@ -515,6 +542,13 @@ class GameEngine:
         raise ActionError("ILLEGAL_ACTION", "this baseline does not implement this PDU type")
 
     def _resolve_top(self) -> list[Outbound]:
+        """
+        Resolve the top item on the priority stack.
+
+        Executes the effect of the spell, ability, or combat damage order currently
+        on top of the stack, applying all relevant state mutations, and generates
+        the appropriate state update PDUs.
+        """
         assert self.state is not None and self.priority is not None
         item = self.priority.pop()
         card = self.catalog.get(item.source)
