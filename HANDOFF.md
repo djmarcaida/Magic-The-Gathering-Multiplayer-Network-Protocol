@@ -8,9 +8,13 @@
 - The GUI uses 58 bundled card images from `client/assets/cards/` and does not make artwork API calls at runtime.
 - The five required card effects are implemented: Lightning Bolt, Counterspell, Unsummon, Giant Growth, and Gray Merchant of Asphodel.
 - Priority ownership is synchronized to both clients after every grant or pass. Only the authoritative holder sees priority actions, and a pending or rejected pass has an explicit recoverable GUI state.
+- Battlefield snapshots no longer fail when a permanent has summoning sickness; the GUI applies that state only to creatures and continues processing stack-resolution updates for both players.
+- Lightning Bolt and Rift Bolt share a player-or-creature targeting path. The opponent is the first player choice, lands are excluded by both GUI and server validation, and Rift Bolt opens its required target prompt.
+- Combat declarations filter persistent mixed selections down to legal creatures. The required player always has an explicit no-attackers or no-blockers action, and declaration phases are labeled as choices rather than priority waits.
+- Stale direct-phase requests return a fresh personalized state/request token for attacker, blocker, damage-order, and required-cleanup actions, allowing a retry instead of leaving the match stuck.
 - The turn header identifies the active player, land controls require both priority and the active player's main phase, selected hand cards stay above hovered cards, and tapped battlefield cards rotate while keeping their semantic outline.
 - On Windows, the server exclusively owns its listening address. A second server cannot silently share port 4444 and split the two clients across separate games.
-- Addressed all identified protocol-level RFC compliance gaps, ensuring exact schema match for `waiting_for`, `FIZZLE`, `TRIGGER_ABILITY`, `id`, `land_played_this_turn`, and `summoning_sickness`. The GUI model layer (`gui_model.py`) was also updated to consume the corrected wire-format field names.
+- Identified protocol-level RFC gaps were addressed for `waiting_for`, `FIZZLE`, `TRIGGER_ABILITY`, `id`, `land_played_this_turn`, and `summoning_sickness`; the GUI consumes those wire-format fields.
 
 ## Running the project
 
@@ -32,11 +36,13 @@ The desktop client requires Python's optional Tcl/Tk component.
 
 ## Verification completed on 2026-08-12
 
-- `python -m unittest discover -s tests` — 112 tests passed with Tcl/Tk enabled, fully verifying the updated RFC schemas.
-- The real-loopback regression starts one server and two TCP clients, completes mulligan setup, transfers opening priority to the other player, and verifies that both projections agree while only the new holder retains a token.
+- `python -m unittest discover` - 116 tests passed and 12 Tk visual smoke tests skipped because this machine's Python installation could not find `init.tcl`.
+- `python -m compileall -q client common server tests` passed.
+- Focused regressions cover summoning-sick creature projection, Rift Bolt targeting, rejection of land targets for burn spells, mixed Ornithopter-plus-land attacker selection, explicit no-attacker/no-blocker actions, and retrying a stale blocker request with the refreshed token.
+- The real-loopback regression starts one server and two TCP clients, completes mulligan setup, transfers opening priority, and verifies that both projections agree while only the holder retains a token.
 - The duplicate-listener regression verifies that a second server cannot bind the first server's address.
 - A live occupied-port check produced the intended clear startup error instead of creating another listener.
-- The Impeccable UI detector reported no findings for `client/gui.py`.
+- The Impeccable UI detector reported no findings for `client/gui.py` in the preceding UI review.
 - `git diff --check` passed.
 
 The automated suite covers framing, all 25 PDU contracts, card-catalog integrity, hidden information, lifecycle and mulligans, priority and stack behavior, required card effects, turn phases, combat branches, connection limits, GUI projections and actions, Tk rendering, and real-loopback two-client behavior.
@@ -50,10 +56,14 @@ The automated suite covers framing, all 25 PDU contracts, card-catalog integrity
 5. Advance through a complete turn. Confirm only the active player can play a land during either main phase, while the non-active player may only use legal priority responses such as supported Instants.
 6. Play and tap a land or declare a non-vigilance attacker. Confirm the battlefield card rotates clockwise, retains its color/selection outline, and returns upright during its controller's next untap step.
 7. Select a hand card and hover adjacent cards. Confirm the selected card remains visually on top and its outline is not obscured.
-8. Finish one complete visible match, including stack responses, attackers, blockers, damage, game over, and readying both retained connections for another mulligan.
-9. Run the automated suite on a teammate's Python 3.12/Tk installation, then merge or cherry-pick the current `finished-test` commit through the team's normal review workflow.
-10. Regenerate or remove `README.pdf` if the team intends to distribute it. It was last updated with the older August 4 implementation and does not match the current source documentation.
-11. Review `THIRD_PARTY_NOTICES.md` and `client/assets/cards/manifest.json` before publicly publishing the bundled artwork.
+8. Cast a creature and let it resolve. Confirm both windows continue updating without `name 'base_card' is not defined`. On a later turn, leave a land selected with an untapped Ornithopter; confirm the attack action remains available and submits only Ornithopter.
+9. At Declare Attackers and Declare Blockers, confirm the required player sees `Choose attackers` or `Choose blockers`, the other player sees an explicit waiting message, and the no-attackers/no-blockers action advances combat.
+10. Cast Lightning Bolt and Rift Bolt. Confirm the opponent is the initial player target, creatures are available, lands are unavailable, and a manually submitted land target is rejected.
+11. Exercise a stale declaration request using a delayed or repeated action. Confirm the client receives a fresh state token and can retry. Heartbeat `Pong` events must not replace the declaration token.
+12. Finish one complete visible match, including stack responses, attackers, blockers, damage, game over, and readying both retained connections for another mulligan.
+13. Run the automated suite on a teammate's Python 3.12/Tk installation so the 12 visual smoke tests execute, then merge or cherry-pick the reviewed commit through the team's normal workflow.
+14. Regenerate or remove `README.pdf` if the team intends to distribute it. It was last updated with the older August 4 implementation and does not match the current source documentation.
+15. Review `THIRD_PARTY_NOTICES.md` and `client/assets/cards/manifest.json` before publicly publishing the bundled artwork.
 
 ## Intentional scope limits
 
@@ -62,4 +72,4 @@ The automated suite covers framing, all 25 PDU contracts, card-catalog integrity
 - Authentication, TLS, spectators, matchmaking, persistence, and best-of-three matches are outside the supplied required scope.
 - Combat does not implement bonus mechanics such as trample carry-over.
 
-No additional backend feature work is currently known to be required by the supplied specifications. Any further code changes should be driven by the manual acceptance tests above or new team requirements.
+No additional backend feature work is currently known to be required by the supplied specifications. Further code changes should be driven by the manual acceptance tests above or new team requirements.

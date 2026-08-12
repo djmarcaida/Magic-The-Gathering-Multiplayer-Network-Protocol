@@ -49,6 +49,21 @@ class RequiredCardEffectTests(unittest.TestCase):
         pass_twice(engine)
         self.assertEqual(engine.state.players[target].life, 17)
 
+    def test_lightning_bolt_rejects_a_land_target(self):
+        engine = playing_engine()
+        caster = engine.state.active_player
+        opponent = engine.state.opponent_of(caster)
+        land = PermanentState("forest_001", opponent, opponent,
+                              summoning_sick=False)
+        engine.state.players[opponent].battlefield.append(land)
+
+        outgoing = give_cast(engine, caster, "lightning_bolt_001",
+                             ["mountain_020"], [land.card_id])
+
+        error = next(item.pdu for item in outgoing if item.pdu["type"] == "ERROR")
+        self.assertEqual(error["code"], "ILLEGAL_TARGET")
+        self.assertIn("lightning_bolt_001", engine.state.players[caster].hand)
+
     def test_counterspell_removes_target_spell_from_stack(self):
         engine = playing_engine()
         caster = engine.state.active_player

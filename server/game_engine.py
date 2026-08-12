@@ -60,7 +60,25 @@ class GameEngine:
                 "player_id": self.state.priority_holder,
                 "time_limit_ms": self.priority_timeout_ms,
             }))
+        elif code == "STALE_ACTION" and self._seat_has_direct_request(seat):
+            update = self.snapshot_updates(seats=(seat,))[0]
+            self.request_tokens[seat] = update.pdu["seq_num"]
+            outgoing.append(update)
         return outgoing
+
+    def _seat_has_direct_request(self, seat: str) -> bool:
+        if self.state is None:
+            return False
+        player_id = self.player_for_seat(seat)
+        active = self.state.active_player
+        if self.state.phase in {Phase.DECLARE_ATTACKERS, Phase.ASSIGN_DAMAGE_ORDER}:
+            return player_id == active
+        if self.state.phase == Phase.DECLARE_BLOCKERS:
+            return player_id != active
+        if self.state.phase == Phase.CLEANUP:
+            return (player_id == active
+                    and len(self.state.players[active].hand) > 7)
+        return False
 
     def protocol_error(self, seat: str, code: str, message: str) -> list[Outbound]:
         return self._error(seat, code, message, None)
@@ -567,9 +585,12 @@ class GameEngine:
     def _validate_spell_targets(self, base_id: str, targets: list[str]) -> None:
         assert self.state is not None
         if base_id in {"lightning_bolt", "rift_bolt"}:
-            if len(targets) != 1 or (targets[0] not in self.state.players
-                                     and self.state.permanent(targets[0]) is None):
-                raise ActionError("ILLEGAL_TARGET", "Spell requires a player or permanent target")
+            target = targets[0] if len(targets) == 1 else None
+            permanent = self.state.permanent(target) if target is not None else None
+            if (target not in self.state.players
+                    and (permanent is None
+                         or "Creature" not in self.catalog.get(permanent.card_id).card_type)):
+                raise ActionError("ILLEGAL_TARGET", "spell requires a player or creature target")
         elif base_id in {"unsummon", "giant_growth"}:
             if len(targets) != 1 or self.state.permanent(targets[0]) is None:
                 raise ActionError("ILLEGAL_TARGET", "spell requires a creature target")

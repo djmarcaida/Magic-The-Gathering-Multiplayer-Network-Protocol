@@ -27,6 +27,8 @@ PHASE_LABELS = {
 }
 
 SUPPORTED_SPELL_EFFECTS = {"lightning_bolt", "counterspell", "unsummon", "giant_growth", "rift_bolt", "ponder", "rampant_growth"}
+TARGETED_SPELL_EFFECTS = {"lightning_bolt", "rift_bolt", "counterspell",
+                          "unsummon", "giant_growth"}
 
 CARD_BORDER_COLORS = {
     "W": "#F3DF9B",
@@ -134,7 +136,8 @@ class CardView:
             keywords=definition.keywords,
             effect=definition.effect,
             tapped=bool(permanent.get("tapped", False)),
-            summoning_sick=bool(permanent.get("summoning_sickness", False)) and "Creature" in base_card.card_type,
+            summoning_sick=(bool(permanent.get("summoning_sickness", False))
+                            and "Creature" in definition.card_type),
             damage=int(permanent.get("damage", 0)),
             power_modifier=int(permanent.get("power_modifier", 0)),
             toughness_modifier=int(permanent.get("toughness_modifier", 0)),
@@ -309,6 +312,30 @@ def bounded_activity_history(history: Sequence[str], message: str,
     return (*tuple(history), normalized)[-limit:]
 
 
+def selected_legal_attackers(view: GameView,
+                             selected_ids: Sequence[str]) -> tuple[CardView, ...]:
+    selected = set(selected_ids)
+    return tuple(
+        card for card in view.player.battlefield
+        if card.instance_id in selected
+        and "Creature" in card.card_type
+        and not card.tapped
+        and (not card.summoning_sick or "Haste" in card.keywords)
+        and "Defender" not in card.keywords
+    )
+
+
+def selected_legal_blockers(view: GameView,
+                            selected_ids: Sequence[str]) -> tuple[CardView, ...]:
+    selected = set(selected_ids)
+    return tuple(
+        card for card in view.player.battlefield
+        if card.instance_id in selected
+        and "Creature" in card.card_type
+        and not card.tapped
+    )
+
+
 def available_actions(view: GameView, selected_ids: list[str] | tuple[str, ...]) -> frozenset[str]:
     """Return only controls that can produce a supported request in this snapshot."""
     actions = {"concede"}
@@ -321,7 +348,6 @@ def available_actions(view: GameView, selected_ids: list[str] | tuple[str, ...])
 
     selected = set(selected_ids)
     selected_hand = [card for card in view.hand if card.instance_id in selected]
-    selected_own = [card for card in view.player.battlefield if card.instance_id in selected]
     main_phase = view.phase in {"PRECOMBAT_MAIN", "POSTCOMBAT_MAIN"}
 
     if len(selected_hand) == 1:
@@ -343,18 +369,13 @@ def available_actions(view: GameView, selected_ids: list[str] | tuple[str, ...])
         actions.add("discard")
 
     if view.phase == "DECLARE_ATTACKERS" and view.is_active_player:
-        legal_attackers = all(
-            "Creature" in card.card_type and not card.tapped
-            and (not card.summoning_sick or "Haste" in card.keywords)
-            and "Defender" not in card.keywords
-            for card in selected_own
-        )
-        if legal_attackers:
+        actions.add("declare_no_attackers")
+        if selected_legal_attackers(view, selected_ids):
             actions.add("declare_attackers")
     if view.phase == "DECLARE_BLOCKERS" and not view.is_active_player:
-        legal_blockers = all("Creature" in card.card_type and not card.tapped
-                             for card in selected_own)
-        if view.combat.get("attackers") and legal_blockers:
+        if view.combat.get("attackers"):
+            actions.add("declare_no_blockers")
+        if view.combat.get("attackers") and selected_legal_blockers(view, selected_ids):
             actions.add("declare_blockers")
     if view.phase == "ASSIGN_DAMAGE_ORDER" and view.is_active_player:
         actions.add("assign_damage_order")
@@ -363,11 +384,11 @@ def available_actions(view: GameView, selected_ids: list[str] | tuple[str, ...])
 
 def legal_target_options(view: GameView, card: CardDefinition) -> tuple[tuple[str, str], ...]:
     permanents = (*view.player.battlefield, *view.opponent.battlefield)
-    if card.base_id == "lightning_bolt":
-        players = ((view.player_id, f"{view.player_id} — player"),
-                   (view.opponent_id, f"{view.opponent_id} — player"))
+    if card.base_id in {"lightning_bolt", "rift_bolt"}:
+        players = ((view.opponent_id, f"{view.opponent_id} — opponent"),
+                   (view.player_id, f"{view.player_id} — you"))
         return players + tuple((item.instance_id, f"{item.name} — permanent")
-                               for item in permanents)
+                               for item in permanents if "Creature" in item.card_type)
     if card.base_id in {"unsummon", "giant_growth"}:
         return tuple((item.instance_id, f"{item.name} — creature") for item in permanents
                      if "Creature" in item.card_type)

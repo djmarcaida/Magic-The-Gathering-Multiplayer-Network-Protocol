@@ -70,6 +70,39 @@ class BackendSpecTests(unittest.TestCase):
         stale = engine.process(active_seat, {"type": "DECLARE_ATTACKERS",
                                              "seq_num": 0, "attackers": []})
         self.assertEqual(stale[0].pdu["code"], "STALE_ACTION")
+        self.assertEqual(stale[1].pdu["type"], "GAME_STATE_UPDATE")
+        self.assertEqual(engine.request_tokens[active_seat], stale[1].pdu["seq_num"])
+
+    def test_stale_blocker_request_resynchronizes_and_can_be_retried(self):
+        engine = playing_engine()
+        active = engine.state.active_player
+        defender = engine.state.opponent_of(active)
+        attacker = PermanentState("goblin_guide_001", active, active,
+                                  summoning_sick=False)
+        blocker = PermanentState("ornithopter_001", defender, defender,
+                                 summoning_sick=False)
+        engine.state.players[active].battlefield.append(attacker)
+        engine.state.players[defender].battlefield.append(blocker)
+        engine.state.phase = Phase.DECLARE_BLOCKERS
+        engine.state.combat.attackers = [attacker.card_id]
+        defender_seat = engine.seat_for_player(defender)
+        engine.request_tokens[defender_seat] = 50
+
+        stale = engine.process(defender_seat, {
+            "type": "DECLARE_BLOCKERS", "seq_num": 49,
+            "blockers": {attacker.card_id: [blocker.card_id]},
+        })
+        retry_token = stale[-1].pdu["seq_num"]
+        retried = engine.process(defender_seat, {
+            "type": "DECLARE_BLOCKERS", "seq_num": retry_token,
+            "blockers": {attacker.card_id: [blocker.card_id]},
+        })
+
+        self.assertEqual(stale[0].pdu["code"], "STALE_ACTION")
+        self.assertEqual(stale[-1].pdu["type"], "GAME_STATE_UPDATE")
+        self.assertFalse(any(item.pdu["type"] == "ERROR" for item in retried))
+        self.assertEqual(engine.state.combat.blockers,
+                         {attacker.card_id: [blocker.card_id]})
 
     def test_no_attack_skips_to_end_of_combat_and_opens_priority(self):
         engine = playing_engine()

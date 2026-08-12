@@ -25,12 +25,15 @@ from client.gui_model import (
     GameView,
     GuiEventBridge,
     PHASE_LABELS,
+    TARGETED_SPELL_EFFECTS,
     available_actions,
     bounded_activity_history,
     card_border_color,
     legal_target_options,
     phase_neighbors,
     resource_summary,
+    selected_legal_attackers,
+    selected_legal_blockers,
 )
 from client.main import load_deck
 from client.network_client import ClientNetwork
@@ -713,6 +716,16 @@ class GameApplication:
             self.priority_var.set("Your priority")
         elif view.priority_holder:
             self.priority_var.set(f"Priority: {view.priority_holder}")
+        elif view.phase == "DECLARE_ATTACKERS":
+            self.priority_var.set(
+                "Choose attackers" if view.is_active_player
+                else "Waiting for opponent to declare attackers"
+            )
+        elif view.phase == "DECLARE_BLOCKERS":
+            self.priority_var.set(
+                "Waiting for opponent to declare blockers" if view.is_active_player
+                else "Choose blockers"
+            )
         else:
             self.priority_var.set("Resolving state")
         self._render_resources(view)
@@ -1135,7 +1148,7 @@ class GameApplication:
         if "pass_priority" in actions:
             add("Pass priority", lambda: self._send("pass_priority", ()), accent=True)
         selected_hand = [card for card in view.hand if card.instance_id in self._selected]
-        selected_own = [card for card in view.player.battlefield if card.instance_id in self._selected]
+        selected_attackers = selected_legal_attackers(view, self._selected)
         if "play_land" in actions:
             add("Play selected land", lambda: self._send(
                 "play_land", (selected_hand[0].instance_id,)))
@@ -1145,9 +1158,15 @@ class GameApplication:
             add("Discard selected", lambda: self._send(
                 "discard", tuple(card.instance_id for card in selected_hand)))
         if "declare_attackers" in actions:
-            add("Declare selected attackers", lambda: self._send("declare_attackers", selected_own))
+            add("Declare selected attackers", lambda: self._send(
+                "declare_attackers", selected_attackers))
+        if "declare_no_attackers" in actions:
+            add("Declare no attackers", lambda: self._send("declare_attackers", ()))
         if "declare_blockers" in actions:
-            add("Declare blockers" if selected_own else "Declare no blockers", self._declare_blockers)
+            add("Declare selected blockers", self._declare_blockers)
+        if "declare_no_blockers" in actions:
+            add("Declare no blockers", lambda: self._send(
+                "declare_blockers", (), {"blockers": {}}))
         if "assign_damage_order" in actions:
             add("Assign damage order", self._assign_damage_order)
         if not self.action_frame.winfo_children():
@@ -1161,7 +1180,7 @@ class GameApplication:
         definition = self.catalog.card(card.instance_id)
         options = legal_target_options(self.current_view, definition)
         targets: list[str] = []
-        if card.base_id in {"lightning_bolt", "counterspell", "unsummon", "giant_growth"}:
+        if card.base_id in TARGETED_SPELL_EFFECTS:
             if not options:
                 self.status_var.set("This spell currently has no legal target.")
                 return
@@ -1179,8 +1198,7 @@ class GameApplication:
     def _declare_blockers(self) -> None:
         if self.current_view is None:
             return
-        blockers = [card for card in self.current_view.player.battlefield
-                    if card.instance_id in self._selected]
+        blockers = list(selected_legal_blockers(self.current_view, self._selected))
         attacker_ids = list(self.current_view.combat.get("attackers", ()))
         mapping = self._choose_blocker_map(blockers, attacker_ids)
         if mapping is not None:
