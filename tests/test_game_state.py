@@ -1,11 +1,14 @@
 import random
 import unittest
 
+from common.cards import CardCatalog
 from server.game_state import GameState, Lifecycle, Phase, PermanentState, StackItem
 
 
 class GameStateTests(unittest.TestCase):
     def setUp(self):
+        from pathlib import Path
+        self.catalog = CardCatalog.from_json(Path("cards.json"))
         self.state = GameState.new(
             ("player_1", "player_2"),
             {"player_1": [f"mountain_{i:03d}" for i in range(1, 11)],
@@ -20,21 +23,20 @@ class GameStateTests(unittest.TestCase):
         self.assertEqual(len(self.state.players["player_2"].library), 3)
 
     def test_visible_state_hides_opponent_hand_and_both_libraries(self):
-        view = self.state.visible_to("player_1")
+        view = self.state.visible_to("player_1", self.catalog)
         self.assertEqual(view["life_totals"], {"player_1": 20, "player_2": 20})
-        self.assertEqual(set(view["hand"]), {"player_1"})
+        self.assertEqual(len(view["hand"]), 7)
         self.assertNotIn("library", view)
         self.assertEqual(view["hand_counts"]["player_2"], 7)
-        self.assertEqual(view["library_counts"], {"player_1": 3, "player_2": 3})
-        self.assertEqual(view["land_played"], {"player_1": False, "player_2": False})
+        self.assertFalse(view["land_played_this_turn"])
 
     def test_visible_state_contains_public_permanent_and_stack_data(self):
         self.state.players["player_1"].battlefield.append(
             PermanentState("goblin_guide_001", "player_1", "player_1", tapped=True))
         self.state.stack.append(StackItem("stk_1", "SPELL", "lightning_bolt_001",
                                           "player_1", ["player_2"]))
-        view = self.state.visible_to("player_2")
-        self.assertEqual(view["battlefield"]["player_1"][0]["card_id"], "goblin_guide_001")
+        view = self.state.visible_to("player_2", self.catalog)
+        self.assertEqual(view["battlefield"]["player_1"][0]["id"], "goblin_guide_001")
         self.assertEqual(view["stack"][0]["stack_item_id"], "stk_1")
 
     def test_short_deck_draws_only_available_opening_cards(self):

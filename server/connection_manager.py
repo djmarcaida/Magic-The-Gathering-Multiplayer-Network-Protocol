@@ -28,6 +28,13 @@ class _Seat:
 
 
 class ConnectionManager:
+    """
+    Manages TCP listeners, socket acceptance, and per-client reader threads.
+
+    Enforces the two-seat limit, manages reconnection timeouts, and places
+    parsed incoming PDUs and connection lifecycle events onto a shared,
+    thread-safe queue for the main engine thread to process.
+    """
     def __init__(self, host: str, port: int, event_queue: queue.Queue,
                  verbose: bool = False, reconnect_timeout: float = 30.0):
         self.host = host
@@ -44,10 +51,17 @@ class ConnectionManager:
 
     def start(self) -> None:
         listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        listener.bind((self.host, self.port))
-        listener.listen(4)
-        listener.settimeout(0.2)
+        try:
+            if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+                listener.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+            else:
+                listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            listener.bind((self.host, self.port))
+            listener.listen(4)
+            listener.settimeout(0.2)
+        except OSError:
+            listener.close()
+            raise
         self.listener = listener
         self.address = listener.getsockname()[:2]
         self._accept_thread = threading.Thread(target=self.accept_connections,

@@ -6,7 +6,7 @@ OWN-WORLD: Charcoal and felt surfaces, warm parchment headings, teal priority cu
 STORY: Connect, scan each player's resources at their battlefield, select a hand card, act through the protocol, and see the authoritative response.
 FIRST VIEWPORT: Flowing phase strip above two battlefields and stack, fanned hand anchored below, contextual actions and history right.
 FORM: Quiet Tabletop, fourth grounded direction, seed 1dc2138b.
-FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, and DESIGN.md
+FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review and verdict.
 """
 
 from __future__ import annotations
@@ -25,12 +25,15 @@ from client.gui_model import (
     GameView,
     GuiEventBridge,
     PHASE_LABELS,
+    TARGETED_SPELL_EFFECTS,
     available_actions,
     bounded_activity_history,
     card_border_color,
     legal_target_options,
     phase_neighbors,
     resource_summary,
+    selected_legal_attackers,
+    selected_legal_blockers,
 )
 from client.main import load_deck
 from client.network_client import ClientNetwork
@@ -86,7 +89,13 @@ class CardStrip:
 
 
 class GameApplication:
-    """Owns the desktop view while delegating transport and rules elsewhere."""
+    """
+    Main Tkinter presentation layer for the MTGNP client.
+
+    Manages the physical rendering of the game tabletop, translates raw
+    user interactions (clicks, mouse wheel) into logical selections, and
+    orchestrates drawing updates whenever the authoritative GameView changes.
+    """
 
     def __init__(self, root: tk.Tk, *, catalog: CardCatalog, asset_dir: str | Path,
                  host: str = "127.0.0.1", port: int = 4444,
@@ -115,8 +124,10 @@ class GameApplication:
         self._strips: dict[tk.Frame, CardStrip] = {}
         self._images: dict[tuple[str, str], tk.PhotoImage] = {}
         self._outlined_images: dict[tuple[str, str, str], tk.PhotoImage] = {}
+        self._tapped_images: dict[tuple[str, str, str], tk.PhotoImage] = {}
         self._closing = False
         self._game_screen_active = False
+        self._priority_pass_pending = False
         self._connection_epoch = 0
         self._pending_network = None
         self._last_connection = (host, port, player_id, deck_path)
@@ -337,6 +348,7 @@ class GameApplication:
         self.controller = None
         self.store = None
         self.current_view = None
+        self._priority_pass_pending = False
         self._selected.clear()
         self._focused_card_id = None
         self.priority_var.set("Disconnected")
@@ -368,6 +380,7 @@ class GameApplication:
         self._displayed_lifecycle = None
         self._phase_animation_target = None
         self._phase_animation_token += 1
+        self._priority_pass_pending = False
         self._activity_history = ()
         self._clear_root()
         shell = ttk.Frame(self.root, padding=(12, 8, 12, 8))
@@ -684,6 +697,8 @@ class GameApplication:
             self.status_var.set(f"Cannot display the latest state: {exc}")
             return
         self.current_view = view
+        if not view.has_priority:
+            self._priority_pass_pending = False
         if view.lifecycle in {"MULLIGAN", "PLAYING"}:
             self.game_over = False
         visible_ids = {
@@ -698,12 +713,25 @@ class GameApplication:
             ", ".join(self._card_label(item) for item in sorted(self._selected))
             if self._selected else "No cards selected"
         )
-        self.turn_var.set(f"Turn {view.turn}")
+        turn_owner = "Your turn" if view.is_active_player else f"Active: {view.active_player}"
+        self.turn_var.set(f"Turn {view.turn} · {turn_owner}")
         self._render_phase_strip(view.phase, turn=view.turn, lifecycle=view.lifecycle)
-        if view.has_priority:
+        if self._priority_pass_pending and view.has_priority:
+            self.priority_var.set("Passing priority...")
+        elif view.has_priority:
             self.priority_var.set("Your priority")
         elif view.priority_holder:
             self.priority_var.set(f"Priority: {view.priority_holder}")
+        elif view.phase == "DECLARE_ATTACKERS":
+            self.priority_var.set(
+                "Choose attackers" if view.is_active_player
+                else "Waiting for opponent to declare attackers"
+            )
+        elif view.phase == "DECLARE_BLOCKERS":
+            self.priority_var.set(
+                "Waiting for opponent to declare blockers" if view.is_active_player
+                else "Choose blockers"
+            )
         else:
             self.priority_var.set("Resolving state")
         self._render_resources(view)
@@ -764,8 +792,8 @@ class GameApplication:
             surface = frame.cget("bg")
             outer = tk.Frame(frame, bg=surface)
             outer.pack(side="left", padx=(0, 8), pady=2)
-            image = self._outlined_card_image(
-                card, "small", "selected" if selected else "rest")
+            emphasis = "selected" if selected else "rest"
+            image = self._battlefield_card_image(card, "small", emphasis)
             button = tk.Button(
                 outer,
                 image=image,
@@ -781,6 +809,7 @@ class GameApplication:
             button.pack()
             button._card_image = image
             button._card_border_color = border_color
+            button._card_emphasis = emphasis
             button.bind("<Return>", lambda _event, card_id=card.instance_id: self._toggle_card(card_id))
             button.bind("<space>", lambda _event, card_id=card.instance_id: self._toggle_card(card_id))
             button.bind(
@@ -823,7 +852,6 @@ class GameApplication:
         card_width = HAND_SELECTED_WIDTH + 12
         total_width = max(strip.canvas.winfo_width(), HAND_STEP * (len(cards) - 1) + card_width + 8)
         strip.canvas.itemconfigure(strip.window, width=total_width, height=HAND_CARD_HEIGHT)
-        focused_outer = None
         focused_button = None
         for index, card in enumerate(cards):
             selected = card.instance_id in self._selected
@@ -862,10 +890,8 @@ class GameApplication:
             self._card_widgets[card.instance_id] = outer
             self._hand_positions[card.instance_id] = (x, card_width)
             if focused:
-                focused_outer = outer
                 focused_button = button
-        if focused_outer is not None:
-            focused_outer.lift()
+        self._raise_selected_hand_cards()
         if focused_button is not None:
             focused_button.focus_set()
         strip.canvas.configure(scrollregion=strip.canvas.bbox("all"))
@@ -924,6 +950,40 @@ class GameApplication:
         self._outlined_images[key] = image
         return image
 
+    def _battlefield_card_image(self, card: CardView, size: str,
+                                emphasis: str) -> tk.PhotoImage | None:
+        image = self._outlined_card_image(card, size, emphasis)
+        if image is None or not card.tapped:
+            return image
+
+        key = (card.base_id, size, emphasis)
+        if key in self._tapped_images:
+            return self._tapped_images[key]
+
+        try:
+            rotated = tk.PhotoImage(
+                master=self.root, width=image.height(), height=image.width())
+            for destination_y in range(image.width()):
+                colors = []
+                transparent_pixels = []
+                for destination_x in range(image.height()):
+                    source_x = destination_y
+                    source_y = image.height() - 1 - destination_x
+                    color = image.get(source_x, source_y)
+                    if isinstance(color, tuple):
+                        color = "#{:02x}{:02x}{:02x}".format(*color[:3])
+                    colors.append(color)
+                    if image.transparency_get(source_x, source_y):
+                        transparent_pixels.append(destination_x)
+                rotated.put("{" + " ".join(colors) + "}", to=(0, destination_y))
+                for destination_x in transparent_pixels:
+                    rotated.transparency_set(destination_x, destination_y, True)
+        except (AttributeError, tk.TclError):
+            rotated = image
+
+        self._tapped_images[key] = rotated
+        return rotated
+
     def _set_hand_hover(self, card_id: str, entering: bool) -> None:
         if card_id not in self._hand_cards or card_id in self._selected:
             return
@@ -956,7 +1016,19 @@ class GameApplication:
         button._card_image = image
         button._card_emphasis = emphasis
         tile.lift()
+        self._raise_selected_hand_cards()
         self._animate_hand_card(card_id, target_y)
+
+    def _raise_selected_hand_cards(self) -> None:
+        """Keep persistent selection above temporary neighboring hover previews."""
+        for card_id in self._hand_cards:
+            if card_id in self._selected and card_id != self._focused_card_id:
+                tile = self.hand_tiles.get(card_id)
+                if tile is not None:
+                    tile.lift()
+        focused = self.hand_tiles.get(self._focused_card_id)
+        if focused is not None and self._focused_card_id in self._selected:
+            focused.lift()
 
     def _animate_hand_card(self, card_id: str, target_y: int) -> None:
         tile = self.hand_tiles.get(card_id)
@@ -1071,10 +1143,19 @@ class GameApplication:
                       background=COLORS["surface"], wraplength=240).pack(anchor="w")
             return
 
+        if self._priority_pass_pending:
+            ttk.Label(
+                self.action_frame,
+                text="Passing priority... Waiting for the server.",
+                style="Muted.TLabel", background=COLORS["surface"], wraplength=240,
+            ).pack(anchor="w")
+            return
+
         if "pass_priority" in actions:
             add("Pass priority", lambda: self._send("pass_priority", ()), accent=True)
         selected_hand = [card for card in view.hand if card.instance_id in self._selected]
-        selected_own = [card for card in view.player.battlefield if card.instance_id in self._selected]
+        selected_attackers = selected_legal_attackers(view, self._selected)
+        selected_blockers = selected_legal_blockers(view, self._selected)
         if "play_land" in actions:
             add("Play selected land", lambda: self._send(
                 "play_land", (selected_hand[0].instance_id,)))
@@ -1084,9 +1165,19 @@ class GameApplication:
             add("Discard selected", lambda: self._send(
                 "discard", tuple(card.instance_id for card in selected_hand)))
         if "declare_attackers" in actions:
-            add("Declare selected attackers", lambda: self._send("declare_attackers", selected_own))
+            attacker_count = len(selected_attackers)
+            label = f"Declare {attacker_count} selected attacker{'s' if attacker_count > 1 else ''}"
+            add(label, lambda: self._send(
+                "declare_attackers", selected_attackers), accent=True)
+        if "declare_no_attackers" in actions:
+            add("Declare no attackers", lambda: self._send("declare_attackers", ()))
         if "declare_blockers" in actions:
-            add("Declare blockers" if selected_own else "Declare no blockers", self._declare_blockers)
+            blocker_count = len(selected_blockers)
+            label = f"Declare {blocker_count} selected blocker{'s' if blocker_count > 1 else ''}"
+            add(label, self._declare_blockers, accent=True)
+        if "declare_no_blockers" in actions:
+            add("Declare no blockers", lambda: self._send(
+                "declare_blockers", (), {"blockers": {}}))
         if "assign_damage_order" in actions:
             add("Assign damage order", self._assign_damage_order)
         if not self.action_frame.winfo_children():
@@ -1100,7 +1191,7 @@ class GameApplication:
         definition = self.catalog.card(card.instance_id)
         options = legal_target_options(self.current_view, definition)
         targets: list[str] = []
-        if card.base_id in {"lightning_bolt", "counterspell", "unsummon", "giant_growth"}:
+        if card.base_id in TARGETED_SPELL_EFFECTS:
             if not options:
                 self.status_var.set("This spell currently has no legal target.")
                 return
@@ -1118,8 +1209,7 @@ class GameApplication:
     def _declare_blockers(self) -> None:
         if self.current_view is None:
             return
-        blockers = [card for card in self.current_view.player.battlefield
-                    if card.instance_id in self._selected]
+        blockers = list(selected_legal_blockers(self.current_view, self._selected))
         attacker_ids = list(self.current_view.combat.get("attackers", ()))
         mapping = self._choose_blocker_map(blockers, attacker_ids)
         if mapping is not None:
@@ -1313,6 +1403,11 @@ class GameApplication:
         except (TypeError, ValueError) as exc:
             self.status_var.set(str(exc))
             return
+        if action == "pass_priority":
+            self._priority_pass_pending = True
+            self.priority_var.set("Passing priority...")
+            if self.current_view is not None:
+                self._render_actions(self.current_view)
         self._append_log(f"Sent {pdu['type']}.")
         self.status_var.set("Action sent. Waiting for the authoritative update.")
 
@@ -1345,6 +1440,13 @@ class GameApplication:
         elif pdu_type == "GAME_OVER":
             self.game_over = True
             self.priority_var.set("Game over")
+            loser_id = pdu.get("loser_id")
+            reason = pdu.get("reason")
+            if reason == "LIFE_ZERO" and loser_id:
+                if loser_id == self.player_id:
+                    self.resource_life_var.set("0")
+                else:
+                    self.opponent_resource_vars["life"].set("0")
             self.status_var.set("Game over. Both players may ready the same decks for another game.")
             if self.current_view is not None:
                 self._render_actions(self.current_view)
@@ -1352,6 +1454,16 @@ class GameApplication:
     def _handle_error(self, pdu: dict[str, object]) -> None:
         if not self._game_screen_active:
             return
+        if self._priority_pass_pending:
+            self._priority_pass_pending = False
+            if self.current_view is not None:
+                if self.current_view.has_priority:
+                    self.priority_var.set("Your priority")
+                elif self.current_view.priority_holder:
+                    self.priority_var.set(f"Priority: {self.current_view.priority_holder}")
+                else:
+                    self.priority_var.set("Resolving state")
+                self._render_actions(self.current_view)
         message = f"{pdu.get('code', 'ERROR')}: {pdu.get('message', 'Action rejected')}"
         self.status_var.set(message)
         self._append_log(message)

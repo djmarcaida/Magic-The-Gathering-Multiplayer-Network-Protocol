@@ -6,6 +6,13 @@ from client.state_store import ClientStateStore
 
 
 class ClientController:
+    """
+    Main orchestration layer for the client.
+
+    Provides a high-level API for generating and sending valid MTGNP protocol
+    messages. Automatically attaches the correct sequence number (priority token)
+    required by the server for state-mutating actions.
+    """
     def __init__(self, player_id: str, sender, store: ClientStateStore):
         self.player_id = player_id
         self.sender = sender

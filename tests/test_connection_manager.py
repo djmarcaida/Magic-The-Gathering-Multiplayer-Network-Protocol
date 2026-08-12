@@ -53,6 +53,14 @@ class ConnectionManagerTests(unittest.TestCase):
         self.assertEqual((rejection["type"], rejection["code"]),
                          ("ERROR", "ILLEGAL_ACTION"))
 
+    def test_second_server_cannot_share_the_same_listening_port(self):
+        duplicate = ConnectionManager(*self.manager.address, queue.Queue())
+        try:
+            with self.assertRaises(OSError):
+                duplicate.start()
+        finally:
+            duplicate.close()
+
     def test_serialized_sender_delivers_complete_frame(self):
         client = self.connect()
         seat = self.next_kind("CONNECTED").seat_id

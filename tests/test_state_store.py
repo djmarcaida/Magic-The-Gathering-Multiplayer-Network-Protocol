@@ -31,6 +31,18 @@ class ClientStateStoreTests(unittest.TestCase):
 
         self.assertEqual(store.last_server_seq, 5)
 
+    def test_authoritative_snapshot_clears_a_stale_local_priority_token(self):
+        store = ClientStateStore()
+        store.apply_pdu({"type": "PRIORITY_GRANT", "seq_num": 9,
+                         "player_id": "p1", "time_limit_ms": 1000})
+
+        store.apply_pdu({"type": "GAME_STATE_UPDATE", "seq_num": 10, "state": {
+            "priority_holder": "p2", "priority_token": None,
+        }})
+
+        self.assertIsNone(store.priority_token)
+        self.assertEqual(store.state["priority_holder"], "p2")
+
 
 if __name__ == "__main__":
     unittest.main()

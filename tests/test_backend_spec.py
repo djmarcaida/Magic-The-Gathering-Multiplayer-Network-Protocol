@@ -1,5 +1,6 @@
 import unittest
 
+from client.state_store import ClientStateStore
 from server.game_state import Phase, PermanentState
 from tests.helpers import start_engine
 
@@ -25,6 +26,36 @@ def pass_window(engine):
 
 
 class BackendSpecTests(unittest.TestCase):
+    def test_priority_transfer_synchronizes_both_client_projections(self):
+        engine = playing_engine()
+        stores = {seat: ClientStateStore() for seat in ("seat_1", "seat_2")}
+
+        def apply(outgoing):
+            for item in outgoing:
+                if item.recipient in stores:
+                    stores[item.recipient].apply_pdu(item.pdu)
+
+        apply(engine.snapshot_updates())
+        previous_holder = engine.state.priority_holder
+        previous_seat = engine.seat_for_player(previous_holder)
+
+        apply(engine.process(previous_seat, {
+            "type": "PRIORITY_PASS",
+            "seq_num": engine.request_tokens[previous_seat],
+        }))
+
+        expected_holder = engine.state.opponent_of(previous_holder)
+        self.assertEqual(engine.state.priority_holder, expected_holder)
+        self.assertEqual(
+            {seat: store.state.get("priority_holder") for seat, store in stores.items()},
+            {"seat_1": expected_holder, "seat_2": expected_holder},
+        )
+        self.assertEqual(
+            sum(store.state.get("priority_holder") == engine.player_for_seat(seat)
+                for seat, store in stores.items()),
+            1,
+        )
+
     def test_declaration_steps_wait_for_the_required_player_and_validate_token(self):
         engine = playing_engine()
         pass_window(engine)  # upkeep -> draw
@@ -39,6 +70,39 @@ class BackendSpecTests(unittest.TestCase):
         stale = engine.process(active_seat, {"type": "DECLARE_ATTACKERS",
                                              "seq_num": 0, "attackers": []})
         self.assertEqual(stale[0].pdu["code"], "STALE_ACTION")
+        self.assertEqual(stale[1].pdu["type"], "GAME_STATE_UPDATE")
+        self.assertEqual(engine.request_tokens[active_seat], stale[1].pdu["seq_num"])
+
+    def test_stale_blocker_request_resynchronizes_and_can_be_retried(self):
+        engine = playing_engine()
+        active = engine.state.active_player
+        defender = engine.state.opponent_of(active)
+        attacker = PermanentState("goblin_guide_001", active, active,
+                                  summoning_sick=False)
+        blocker = PermanentState("ornithopter_001", defender, defender,
+                                 summoning_sick=False)
+        engine.state.players[active].battlefield.append(attacker)
+        engine.state.players[defender].battlefield.append(blocker)
+        engine.state.phase = Phase.DECLARE_BLOCKERS
+        engine.state.combat.attackers = [attacker.card_id]
+        defender_seat = engine.seat_for_player(defender)
+        engine.request_tokens[defender_seat] = 50
+
+        stale = engine.process(defender_seat, {
+            "type": "DECLARE_BLOCKERS", "seq_num": 49,
+            "blockers": {attacker.card_id: [blocker.card_id]},
+        })
+        retry_token = stale[-1].pdu["seq_num"]
+        retried = engine.process(defender_seat, {
+            "type": "DECLARE_BLOCKERS", "seq_num": retry_token,
+            "blockers": {attacker.card_id: [blocker.card_id]},
+        })
+
+        self.assertEqual(stale[0].pdu["code"], "STALE_ACTION")
+        self.assertEqual(stale[-1].pdu["type"], "GAME_STATE_UPDATE")
+        self.assertFalse(any(item.pdu["type"] == "ERROR" for item in retried))
+        self.assertEqual(engine.state.combat.blockers,
+                         {attacker.card_id: [blocker.card_id]})
 
     def test_no_attack_skips_to_end_of_combat_and_opens_priority(self):
         engine = playing_engine()
@@ -184,7 +248,8 @@ class BackendSpecTests(unittest.TestCase):
             "attacker_id": attacker.card_id,
             "blocker_order": [blocker.card_id for blocker in blockers],
         })
-        self.assertEqual(outgoing[-1].pdu["type"], "PRIORITY_GRANT")
+        self.assertEqual(sum(item.pdu["type"] == "PRIORITY_GRANT" for item in outgoing), 1)
+        self.assertEqual(sum(item.pdu["type"] == "GAME_STATE_UPDATE" for item in outgoing), 2)
         pass_window(engine)
         self.assertEqual(engine.state.phase, Phase.END_OF_COMBAT)
         self.assertIsNone(engine.state.permanent(attacker.card_id))
@@ -197,7 +262,8 @@ class BackendSpecTests(unittest.TestCase):
         outgoing = engine.expire_priority(engine.priority_deadline + 0.001)
 
         self.assertEqual(engine.state.priority_holder, engine.state.opponent_of(holder))
-        self.assertEqual(outgoing[-1].pdu["type"], "PRIORITY_GRANT")
+        self.assertEqual(sum(item.pdu["type"] == "PRIORITY_GRANT" for item in outgoing), 1)
+        self.assertEqual(sum(item.pdu["type"] == "GAME_STATE_UPDATE" for item in outgoing), 2)
 
     def test_rejected_action_does_not_reset_the_existing_pass_sequence(self):
         engine = playing_engine()

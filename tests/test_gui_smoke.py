@@ -14,10 +14,15 @@ ROOT = Path(__file__).resolve().parents[1]
 class FakeController:
     def __init__(self):
         self.ready_decks = []
+        self.priority_passes = 0
 
     def ready(self, deck):
         self.ready_decks.append(list(deck))
         return {"type": "PLAYER_READY"}
+
+    def pass_priority(self):
+        self.priority_passes += 1
+        return {"type": "PRIORITY_PASS"}
 
 
 class FakeNetwork:
@@ -55,9 +60,20 @@ class GuiSmokeTests(unittest.TestCase):
         self.root.update_idletasks()
 
         self.assertEqual(app.phase_var.get(), "Pre-combat main")
-        self.assertEqual(app.turn_var.get(), "Turn 1")
+        self.assertEqual(app.turn_var.get(), "Turn 1 · Your turn")
         self.assertEqual(app.priority_var.get(), "Your priority")
         self.assertEqual(len(app.hand_zone.winfo_children()), 2)
+
+        opponent_turn = self._state()
+        opponent_turn["active_player"] = "p2"
+        opponent_turn["priority_holder"] = "p2"
+        opponent_turn["priority_token"] = None
+        store.apply_pdu({"type": "GAME_STATE_UPDATE", "seq_num": 8,
+                         "state": opponent_turn})
+        self.root.update_idletasks()
+
+        self.assertEqual(app.turn_var.get(), "Turn 1 · Active: p2")
+        self.assertEqual(app.priority_var.get(), "Priority: p2")
 
     def test_phase_strip_exposes_flow_arrows_and_neighboring_phases(self):
         catalog = CardCatalog.from_path(ROOT / "cards.json")
@@ -75,6 +91,60 @@ class GuiSmokeTests(unittest.TestCase):
         self.assertEqual(app.next_phase_var.get(), "Begin combat")
         self.assertTrue(app.phase_before_arrow.find_all())
         self.assertTrue(app.phase_after_arrow.find_all())
+
+    def test_passing_priority_immediately_hides_the_stale_holder_controls(self):
+        catalog = CardCatalog.from_path(ROOT / "cards.json")
+        store = ClientStateStore()
+        controller = FakeController()
+        app = GameApplication(self.root, catalog=catalog,
+                              asset_dir=ROOT / "client" / "assets" / "cards")
+        app.attach_session("p1", controller, store, FakeNetwork())
+        store.apply_pdu({"type": "GAME_STATE_UPDATE", "seq_num": 7,
+                         "state": self._state()})
+        self.root.update_idletasks()
+
+        app._send("pass_priority", ())
+        self.root.update_idletasks()
+
+        self.assertEqual(controller.priority_passes, 1)
+        self.assertEqual(app.priority_var.get(), "Passing priority...")
+        self.assertNotIn(
+            "Pass priority",
+            [child.cget("text") for child in app.action_frame.winfo_children()
+             if isinstance(child, ttk.Button)],
+        )
+
+        transferred = self._state()
+        transferred["priority_holder"] = "p2"
+        transferred["priority_token"] = None
+        store.apply_pdu({"type": "GAME_STATE_UPDATE", "seq_num": 8,
+                         "state": transferred})
+        self.root.update_idletasks()
+
+        self.assertEqual(app.priority_var.get(), "Priority: p2")
+        self.assertFalse(app._priority_pass_pending)
+
+    def test_rejected_priority_pass_restores_the_holder_controls(self):
+        catalog = CardCatalog.from_path(ROOT / "cards.json")
+        store = ClientStateStore()
+        app = GameApplication(self.root, catalog=catalog,
+                              asset_dir=ROOT / "client" / "assets" / "cards")
+        app.attach_session("p1", FakeController(), store, FakeNetwork())
+        store.apply_pdu({"type": "GAME_STATE_UPDATE", "seq_num": 7,
+                         "state": self._state()})
+
+        app._send("pass_priority", ())
+        app._handle_error({"type": "ERROR", "code": "STALE_ACTION",
+                           "message": "action rejected"})
+        self.root.update_idletasks()
+
+        self.assertEqual(app.priority_var.get(), "Your priority")
+        self.assertFalse(app._priority_pass_pending)
+        self.assertIn(
+            "Pass priority",
+            [child.cget("text") for child in app.action_frame.winfo_children()
+             if isinstance(child, ttk.Button)],
+        )
 
     def test_selected_hand_card_lifts_without_metadata_captions(self):
         catalog = CardCatalog.from_path(ROOT / "cards.json")
@@ -102,6 +172,12 @@ class GuiSmokeTests(unittest.TestCase):
         labels = [widget for widget in focused.winfo_children()
                   if isinstance(widget, tk.Label)]
         self.assertFalse(any(widget.cget("text").startswith("Mana:") for widget in labels))
+
+        app._set_hand_hover("mountain_001", True)
+        self.root.update_idletasks()
+
+        self.assertIs(app.hand_zone.winfo_children()[-1], focused)
+        self.assertEqual(selected_button._card_emphasis, "selected")
 
     def test_hand_hover_uses_larger_native_cards_and_scroll_only_viewport(self):
         catalog = CardCatalog.from_path(ROOT / "cards.json")
@@ -148,7 +224,7 @@ class GuiSmokeTests(unittest.TestCase):
                               asset_dir=ROOT / "client" / "assets" / "cards")
         app.attach_session("p1", FakeController(), store, FakeNetwork())
         state = self._state()
-        state["battlefield"]["p1"] = [{"card_id": "mountain_003", "tapped": False}]
+        state["battlefield"]["p1"] = [{"id": "mountain_003", "tapped": False}]
         state["graveyard"]["p1"] = ["lightning_bolt_002"]
         state["exile"]["p2"] = ["island_003"]
         store.apply_pdu({"type": "GAME_STATE_UPDATE", "seq_num": 7, "state": state})
@@ -158,6 +234,60 @@ class GuiSmokeTests(unittest.TestCase):
         self.assertEqual(app.resource_graveyard_var.get(), "1")
         self.assertEqual(app.opponent_resource_vars["exile"].get(), "1")
         self.assertEqual(app.resource_mana_var.get(), "Potential mana: R 1")
+
+    def test_tapped_battlefield_card_rotates_and_keeps_selected_outline(self):
+        catalog = CardCatalog.from_path(ROOT / "cards.json")
+        store = ClientStateStore()
+        app = GameApplication(self.root, catalog=catalog,
+                              asset_dir=ROOT / "client" / "assets" / "cards")
+        app.attach_session("p1", FakeController(), store, FakeNetwork())
+        state = self._state()
+        state["battlefield"]["p1"] = [{"id": "mountain_003", "tapped": False}]
+        store.apply_pdu({"type": "GAME_STATE_UPDATE", "seq_num": 7, "state": state})
+        app._toggle_card("mountain_003")
+        self.root.update_idletasks()
+
+        upright_outer = app._card_widgets["mountain_003"]
+        upright_button = next(
+            child for child in upright_outer.winfo_children() if isinstance(child, tk.Button))
+        upright_image = upright_button._card_image
+        self.assertEqual(upright_button._card_emphasis, "selected")
+        self.assertEqual(upright_button._card_border_color.lower(), "#d76a5b")
+        self.assertGreater(upright_image.height(), upright_image.width())
+
+        tapped_state = self._state()
+        tapped_state["battlefield"]["p1"] = [
+            {"id": "mountain_003", "tapped": True}]
+        store.apply_pdu({"type": "GAME_STATE_UPDATE", "seq_num": 8,
+                         "state": tapped_state})
+        self.root.update_idletasks()
+
+        tapped_outer = app._card_widgets["mountain_003"]
+        tapped_button = next(
+            child for child in tapped_outer.winfo_children() if isinstance(child, tk.Button))
+        tapped_image = tapped_button._card_image
+        self.assertEqual(tapped_button._card_emphasis, "selected")
+        self.assertEqual(tapped_button._card_border_color.lower(), "#d76a5b")
+        self.assertEqual(tapped_image.width(), upright_image.height())
+        self.assertEqual(tapped_image.height(), upright_image.width())
+        self.assertIn(
+            "Tapped",
+            [child.cget("text") for child in tapped_outer.winfo_children()
+             if isinstance(child, tk.Label)],
+        )
+
+        untapped_state = self._state()
+        untapped_state["battlefield"]["p1"] = [
+            {"id": "mountain_003", "tapped": False}]
+        store.apply_pdu({"type": "GAME_STATE_UPDATE", "seq_num": 9,
+                         "state": untapped_state})
+        self.root.update_idletasks()
+
+        untapped_outer = app._card_widgets["mountain_003"]
+        untapped_button = next(
+            child for child in untapped_outer.winfo_children() if isinstance(child, tk.Button))
+        self.assertEqual(untapped_button._card_image.width(), upright_image.width())
+        self.assertEqual(untapped_button._card_image.height(), upright_image.height())
 
     def test_disconnect_recovery_closes_once_and_restores_prefilled_form(self):
         catalog = CardCatalog.from_path(ROOT / "cards.json")
@@ -242,7 +372,7 @@ class GuiSmokeTests(unittest.TestCase):
             "lifecycle": "PLAYING", "phase": "PRECOMBAT_MAIN", "turn": 1,
             "first_player": "p1", "active_player": "p1", "priority_holder": "p1",
             "priority_token": 7, "life_totals": {"p1": 20, "p2": 20},
-            "hand": {"p1": ["mountain_001", "lightning_bolt_001"]},
+            "hand": ["mountain_001", "lightning_bolt_001"],
             "hand_counts": {"p1": 2, "p2": 5}, "library_counts": {"p1": 41, "p2": 42},
             "battlefield": {"p1": [], "p2": []},
             "graveyard": {"p1": [], "p2": []}, "exile": {"p1": [], "p2": []},

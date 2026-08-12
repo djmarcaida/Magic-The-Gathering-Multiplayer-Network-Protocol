@@ -14,6 +14,7 @@ from client.gui_model import (
     legal_target_options,
     phase_neighbors,
     resource_summary,
+    selected_legal_attackers,
 )
 from server.game_state import Phase
 
@@ -53,6 +54,19 @@ class GuiModelTests(unittest.TestCase):
         self.assertTrue(view.is_active_player)
         self.assertEqual(view.player.battlefield[0].name, "Mountain")
         self.assertTrue(view.player.battlefield[0].tapped)
+
+    def test_game_view_applies_summoning_sickness_only_to_creatures(self):
+        catalog = CardCatalog.from_path(ROOT / "cards.json")
+        state = self._state()
+        state["battlefield"]["p1"] = [
+            {"id": "goblin_guide_001", "summoning_sick": True},
+            {"id": "mountain_002", "summoning_sick": True},
+        ]
+
+        view = GameView.from_state("p1", state, catalog)
+
+        self.assertTrue(view.player.battlefield[0].summoning_sick)
+        self.assertFalse(view.player.battlefield[1].summoning_sick)
 
     def test_event_bridge_drains_callbacks_in_posted_order(self):
         bridge = GuiEventBridge()
@@ -127,7 +141,7 @@ class GuiModelTests(unittest.TestCase):
         }
         for card_id, color in expected.items():
             state = self._state()
-            state["hand"]["p1"] = [card_id]
+            state["hand"] = [card_id]
             card = GameView.from_state("p1", state, catalog).hand[0]
             with self.subTest(card_id=card_id):
                 self.assertEqual(card_border_color(card), color)
@@ -139,19 +153,19 @@ class GuiModelTests(unittest.TestCase):
         catalog = CardCatalog.from_path(ROOT / "cards.json")
         state = self._state()
         state["battlefield"]["p1"] = [
-            {"card_id": "mountain_001", "tapped": False},
-            {"card_id": "mountain_002", "tapped": True},
-            {"card_id": "forest_001", "tapped": False},
-            {"card_id": "plains_001", "tapped": False},
-            {"card_id": "island_001", "tapped": False},
-            {"card_id": "swamp_001", "tapped": False},
-            {"card_id": "sol_ring_001", "tapped": False},
-            {"card_id": "llanowar_elves_001", "tapped": False},
+            {"id": "mountain_001", "tapped": False},
+            {"id": "mountain_002", "tapped": True},
+            {"id": "forest_001", "tapped": False},
+            {"id": "plains_001", "tapped": False},
+            {"id": "island_001", "tapped": False},
+            {"id": "swamp_001", "tapped": False},
+            {"id": "sol_ring_001", "tapped": False},
+            {"id": "llanowar_elves_001", "tapped": False},
         ]
         summary = resource_summary(GameView.from_state("p1", state, catalog).player)
 
         self.assertEqual(summary.mana_sources,
-                         {"R": 1, "G": 1, "W": 1, "U": 1, "B": 1, "C": 2})
+                         {"R": 1, "G": 2, "W": 1, "U": 1, "B": 1, "C": 2})
         self.assertEqual(summary.permanent_count, 8)
         self.assertEqual(summary.life, 20)
         self.assertEqual(summary.hand_count, 2)
@@ -172,42 +186,118 @@ class GuiModelTests(unittest.TestCase):
     def test_available_actions_hide_unsupported_and_wrong_phase_controls(self):
         catalog = CardCatalog.from_path(ROOT / "cards.json")
         state = self._state()
-        state["land_played"] = {"p1": False, "p2": False}
+        state["land_played_this_turn"] = False
         view = GameView.from_state("p1", state, catalog)
 
         self.assertIn("play_land", available_actions(view, ["mountain_001"]))
         self.assertIn("cast_spell", available_actions(view, ["lightning_bolt_003"]))
         self.assertNotIn("activate_ability", available_actions(view, ["mountain_002"]))
 
-        state["hand"]["p1"] = ["shock_001"]
+        state["priority_holder"] = "p2"
+        waiting_for_opponent = GameView.from_state("p1", state, catalog)
+        self.assertNotIn("play_land", available_actions(waiting_for_opponent, ["mountain_001"]))
+        state["priority_holder"] = "p1"
+
+        for card_id in ("rift_bolt_001", "ponder_001", "rampant_growth_001"):
+            state["hand"] = [card_id]
+            with self.subTest(card_id=card_id):
+                supported = GameView.from_state("p1", state, catalog)
+                self.assertIn("cast_spell", available_actions(supported, [card_id]))
+
+        state["hand"] = ["shock_001"]
+        supported_burn = GameView.from_state("p1", state, catalog)
+        self.assertIn("cast_spell", available_actions(supported_burn, ["shock_001"]))
+
+        state["hand"] = ["naturalize_001"]
         unsupported = GameView.from_state("p1", state, catalog)
-        self.assertNotIn("cast_spell", available_actions(unsupported, ["shock_001"]))
+        self.assertNotIn("cast_spell", available_actions(unsupported, ["naturalize_001"]))
 
         state["phase"] = "UPKEEP"
         wrong_phase = GameView.from_state("p1", state, catalog)
         self.assertNotIn("play_land", available_actions(wrong_phase, ["mountain_001"]))
         self.assertNotIn("discard", available_actions(wrong_phase, ["shock_001"]))
 
+    def test_declaration_steps_always_allow_declaring_no_combatants(self):
+        catalog = CardCatalog.from_path(ROOT / "cards.json")
+        state = self._state()
+        state["phase"] = "DECLARE_ATTACKERS"
+        state["battlefield"]["p1"] = [{
+            "id": "grizzly_bears_001", "owner": "p1", "controller": "p1",
+            "tapped": False, "summoning_sick": True, "damage": 0,
+            "power_modifier": 0, "toughness_modifier": 0,
+        }, {
+            "id": "ornithopter_001", "owner": "p1", "controller": "p1",
+            "tapped": False, "summoning_sick": False, "damage": 0,
+            "power_modifier": 0, "toughness_modifier": 0,
+        }, {
+            "id": "mountain_002", "owner": "p1", "controller": "p1",
+            "tapped": False, "summoning_sick": False, "damage": 0,
+            "power_modifier": 0, "toughness_modifier": 0,
+        }]
+        attack_view = GameView.from_state("p1", state, catalog)
+
+        sick_only = available_actions(attack_view, ["grizzly_bears_001"])
+        mixed_selection = available_actions(
+            attack_view, ["ornithopter_001", "mountain_002"])
+
+        self.assertIn("declare_no_attackers", sick_only)
+        self.assertNotIn("declare_attackers", sick_only)
+        self.assertIn("declare_attackers", mixed_selection)
+        self.assertEqual(
+            [card.instance_id for card in selected_legal_attackers(
+                attack_view, ["ornithopter_001", "mountain_002"])],
+            ["ornithopter_001"],
+        )
+
+        state["phase"] = "DECLARE_BLOCKERS"
+        state["active_player"] = "p2"
+        state["combat"]["attackers"] = ["goblin_guide_001"]
+        state["battlefield"]["p1"][1]["tapped"] = True
+        block_view = GameView.from_state("p1", state, catalog)
+
+        block_actions = available_actions(block_view, ["ornithopter_001"])
+
+        self.assertIn("declare_no_blockers", block_actions)
+        self.assertNotIn("declare_blockers", block_actions)
+
     def test_legal_target_options_are_derived_from_authoritative_state(self):
         catalog = CardCatalog.from_path(ROOT / "cards.json")
         state = self._state()
         state["battlefield"]["p2"] = [{
-            "card_id": "ornithopter_001", "owner": "p2", "controller": "p2",
+            "id": "ornithopter_001", "owner": "p2", "controller": "p2",
             "tapped": False, "summoning_sick": False, "damage": 0,
             "power_modifier": 0, "toughness_modifier": 0,
         }]
         state["stack"] = [{"stack_item_id": "stk_4", "item_type": "SPELL",
                            "source": "shock_001", "controller": "p2", "targets": ["p1"]}]
+        state["battlefield"]["p2"].append({
+            "id": "black_knight_001", "owner": "p2", "controller": "p2",
+            "tapped": False, "summoning_sick": False, "damage": 0,
+            "power_modifier": 0, "toughness_modifier": 0,
+        })
+        state["graveyard"]["p1"] = ["black_knight_002", "swamp_001"]
         view = GameView.from_state("p1", state, catalog)
 
         bolt_targets = dict(legal_target_options(view, catalog.card("lightning_bolt_003")))
+        shock_targets = dict(legal_target_options(view, catalog.card("shock_001")))
+        rift_bolt_targets = dict(legal_target_options(view, catalog.card("rift_bolt_003")))
         counter_targets = dict(legal_target_options(view, catalog.card("counterspell_001")))
         growth_targets = dict(legal_target_options(view, catalog.card("giant_growth_001")))
+        doom_targets = dict(legal_target_options(view, catalog.card("doom_blade_001")))
+        terror_targets = dict(legal_target_options(view, catalog.card("terror_001")))
+        raise_targets = dict(legal_target_options(view, catalog.card("raise_dead_001")))
 
+        self.assertEqual(next(iter(bolt_targets)), "p2")
         self.assertIn("p2", bolt_targets)
         self.assertIn("ornithopter_001", bolt_targets)
+        self.assertNotIn("mountain_002", bolt_targets)
+        self.assertEqual(shock_targets, bolt_targets)
+        self.assertEqual(rift_bolt_targets, bolt_targets)
         self.assertEqual(set(counter_targets), {"stk_4"})
-        self.assertEqual(set(growth_targets), {"ornithopter_001"})
+        self.assertEqual(set(growth_targets), {"ornithopter_001", "black_knight_001"})
+        self.assertEqual(set(doom_targets), {"ornithopter_001"})
+        self.assertEqual(terror_targets, {})
+        self.assertEqual(set(raise_targets), {"black_knight_002"})
 
     @staticmethod
     def _state():
@@ -220,12 +310,12 @@ class GuiModelTests(unittest.TestCase):
             "priority_holder": "p1",
             "priority_token": 18,
             "life_totals": {"p1": 20, "p2": 17},
-            "hand": {"p1": ["mountain_001", "lightning_bolt_003"]},
+            "hand": ["mountain_001", "lightning_bolt_003"],
             "hand_counts": {"p1": 2, "p2": 4},
             "library_counts": {"p1": 34, "p2": 35},
-            "land_played": {"p1": False, "p2": False},
+            "land_played_this_turn": False,
             "battlefield": {
-                "p1": [{"card_id": "mountain_002", "owner": "p1", "controller": "p1",
+                "p1": [{"id": "mountain_002", "owner": "p1", "controller": "p1",
                          "tapped": True, "summoning_sick": False, "damage": 0,
                          "power_modifier": 0, "toughness_modifier": 0}],
                 "p2": [],

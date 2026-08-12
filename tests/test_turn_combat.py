@@ -73,6 +73,54 @@ class TurnAndCombatTests(unittest.TestCase):
         result = next(x.pdu for x in outgoing if x.pdu["type"] == "COMBAT_DAMAGE_RESULT")
         self.assertEqual(len(result["creatures_died"]), 2)
 
+    def test_ground_creature_cannot_block_flying_attacker(self):
+        engine = playing_engine()
+        attacker_id = engine.state.active_player
+        defender_id = engine.state.opponent_of(attacker_id)
+        attacker = PermanentState("ornithopter_001", attacker_id, attacker_id,
+                                  summoning_sick=False)
+        blocker = PermanentState("wall_of_stone_001", defender_id, defender_id,
+                                 summoning_sick=False)
+        engine.state.players[attacker_id].battlefield = [attacker]
+        engine.state.players[defender_id].battlefield = [blocker]
+        engine.state.combat.attackers = [attacker.card_id]
+        engine.state.phase = Phase.DECLARE_BLOCKERS
+        engine._grant_priority(defender_id)
+        seat = engine.seat_for_player(defender_id)
+
+        outgoing = engine.process(seat, {
+            "type": "DECLARE_BLOCKERS", "seq_num": engine.request_tokens[seat],
+            "blockers": [{"creature_id": blocker.card_id,
+                          "blocking_id": attacker.card_id}],
+        })
+
+        self.assertEqual(outgoing[0].pdu["code"], "ILLEGAL_ACTION")
+        self.assertEqual(engine.state.combat.blockers, {})
+
+    def test_protection_from_color_prevents_blocking(self):
+        engine = playing_engine()
+        attacker_id = engine.state.active_player
+        defender_id = engine.state.opponent_of(attacker_id)
+        attacker = PermanentState("black_knight_001", attacker_id, attacker_id,
+                                  summoning_sick=False)
+        blocker = PermanentState("savannah_lions_001", defender_id, defender_id,
+                                 summoning_sick=False)
+        engine.state.players[attacker_id].battlefield = [attacker]
+        engine.state.players[defender_id].battlefield = [blocker]
+        engine.state.combat.attackers = [attacker.card_id]
+        engine.state.phase = Phase.DECLARE_BLOCKERS
+        engine._grant_priority(defender_id)
+        seat = engine.seat_for_player(defender_id)
+
+        outgoing = engine.process(seat, {
+            "type": "DECLARE_BLOCKERS", "seq_num": engine.request_tokens[seat],
+            "blockers": [{"creature_id": blocker.card_id,
+                          "blocking_id": attacker.card_id}],
+        })
+
+        self.assertEqual(outgoing[0].pdu["code"], "ILLEGAL_ACTION")
+        self.assertEqual(engine.state.combat.blockers, {})
+
 
 if __name__ == "__main__":
     unittest.main()

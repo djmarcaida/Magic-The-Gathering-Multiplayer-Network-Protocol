@@ -10,6 +10,13 @@ from common.framing import recv_pdu, send_pdu
 
 
 class ClientNetwork:
+    """
+    Manages the physical TCP connection to the MTGNP server.
+
+    Handles outbound PDU serialization, inbound asynchronous reading, and
+    an optional heartbeat (ping/pong) mechanism to detect dead connections
+    quickly and fire disconnection callbacks.
+    """
     def __init__(self, host: str, port: int, *, verbose: bool = False,
                  heartbeat_interval: float = 0.0, heartbeat_timeout: float = 10.0):
         self.host = host

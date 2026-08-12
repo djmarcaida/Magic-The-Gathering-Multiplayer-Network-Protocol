@@ -9,6 +9,7 @@ from typing import Any
 
 
 class Lifecycle(str, Enum):
+    """Broad phases of a game session from lobby through completion."""
     LOBBY = "LOBBY"
     MULLIGAN = "MULLIGAN"
     PLAYING = "PLAYING"
@@ -16,6 +17,7 @@ class Lifecycle(str, Enum):
 
 
 class Phase(str, Enum):
+    """Granular steps and phases within a single turn."""
     UNTAP = "UNTAP"
     UPKEEP = "UPKEEP"
     DRAW = "DRAW"
@@ -37,6 +39,7 @@ PHASE_ORDER = tuple(Phase)
 
 @dataclass
 class PermanentState:
+    """Represents a single card instance currently on the battlefield."""
     card_id: str
     owner: str
     controller: str
@@ -49,6 +52,7 @@ class PermanentState:
 
 @dataclass
 class StackItem:
+    """Represents a spell, triggered ability, or activated ability on the stack."""
     stack_item_id: str
     item_type: str
     source: str
@@ -59,6 +63,7 @@ class StackItem:
 
 @dataclass
 class CombatState:
+    """Tracks current combat participants and damage assignment orders."""
     attackers: list[str] = field(default_factory=list)
     blockers: dict[str, list[str]] = field(default_factory=dict)
     damage_order: dict[str, list[str]] = field(default_factory=dict)
@@ -66,6 +71,7 @@ class CombatState:
 
 @dataclass
 class PlayerState:
+    """Authoritative tracker for all private and public zones of a specific player."""
     player_id: str
     life: int = 20
     library: list[str] = field(default_factory=list)
@@ -73,6 +79,7 @@ class PlayerState:
     battlefield: list[PermanentState] = field(default_factory=list)
     graveyard: list[str] = field(default_factory=list)
     exile: list[str] = field(default_factory=list)
+    mana_pool: dict[str, int] = field(default_factory=dict)
     land_played: bool = False
     mulligans: int = 0
     kept: bool = False
@@ -80,6 +87,12 @@ class PlayerState:
 
 @dataclass
 class GameState:
+    """
+    The single source of truth for the entire match.
+
+    Maintains all player states, turn phases, combat, and the stack.
+    Responsible for generating the filtered 'visible' state payload for clients.
+    """
     players: dict[str, PlayerState]
     seats: dict[str, str]
     first_player: str
@@ -113,9 +126,19 @@ class GameState:
                     return permanent
         return None
 
-    def visible_to(self, player_id: str) -> dict[str, object]:
+    def visible_to(self, player_id: str, catalog: Any) -> dict[str, object]:
         def public_permanent(permanent: PermanentState) -> dict[str, object]:
-            return asdict(permanent)
+            card = catalog.get(permanent.card_id)
+            d: dict[str, object] = {
+                "id": permanent.card_id,
+                "tapped": permanent.tapped,
+            }
+            if "Creature" in card.card_type:
+                d["damage"] = permanent.damage
+                d["power"] = (card.power or 0) + permanent.power_modifier
+                d["toughness"] = (card.toughness or 0) + permanent.toughness_modifier
+                d["summoning_sick"] = permanent.summoning_sick
+            return d
 
         return {
             "lifecycle": self.lifecycle.value,
@@ -126,10 +149,11 @@ class GameState:
             "priority_holder": self.priority_holder,
             "priority_token": self.priority_token if self.priority_holder == player_id else None,
             "life_totals": {pid: p.life for pid, p in self.players.items()},
-            "hand": {player_id: list(self.players[player_id].hand)},
+            "mana_pools": {pid: dict(p.mana_pool) for pid, p in self.players.items()},
+            "hand": list(self.players[player_id].hand),
             "hand_counts": {pid: len(p.hand) for pid, p in self.players.items()},
             "library_counts": {pid: len(p.library) for pid, p in self.players.items()},
-            "land_played": {pid: p.land_played for pid, p in self.players.items()},
+            "land_played_this_turn": self.players[self.active_player].land_played,
             "battlefield": {pid: [public_permanent(x) for x in p.battlefield]
                             for pid, p in self.players.items()},
             "graveyard": {pid: list(p.graveyard) for pid, p in self.players.items()},

@@ -26,7 +26,15 @@ PHASE_LABELS = {
     "CLEANUP": "Cleanup",
 }
 
-SUPPORTED_SPELL_EFFECTS = {"lightning_bolt", "counterspell", "unsummon", "giant_growth"}
+SUPPORTED_SPELL_EFFECTS = {
+    "lightning_bolt", "shock", "lava_spike", "counterspell", "unsummon",
+    "giant_growth", "rift_bolt", "ponder", "rampant_growth", "dark_ritual",
+    "doom_blade", "terror", "mind_rot", "raise_dead",
+}
+TARGETED_SPELL_EFFECTS = {
+    "lightning_bolt", "shock", "lava_spike", "rift_bolt", "counterspell",
+    "unsummon", "giant_growth", "doom_blade", "terror", "mind_rot", "raise_dead",
+}
 
 CARD_BORDER_COLORS = {
     "W": "#F3DF9B",
@@ -44,6 +52,8 @@ MANA_SOURCE_OUTPUTS = {
     "swamp": ("B", 1),
     "plains": ("W", 1),
     "sol_ring": ("C", 2),
+    "llanowar_elves": ("G", 1),
+    "elvish_mystic": ("G", 1),
 }
 
 
@@ -113,34 +123,40 @@ class CardView:
     damage: int = 0
     power_modifier: int = 0
     toughness_modifier: int = 0
+    owner: str = ""
+    controller: str = ""
 
     @classmethod
     def from_instance(cls, instance_id: str, catalog: CardCatalog,
-                      permanent: dict[str, Any] | None = None) -> "CardView":
-        definition = catalog.card(instance_id)
-        permanent = permanent or {}
+                      state: dict[str, Any] | None = None,
+                      controller: str = "") -> "CardView":
+        card = catalog.card(instance_id)
         return cls(
             instance_id=instance_id,
-            base_id=definition.base_id,
-            name=definition.name,
-            card_type=definition.card_type,
-            subtype=definition.subtype,
-            colors=definition.colors,
-            mana_cost=definition.mana_cost,
-            power=definition.power,
-            toughness=definition.toughness,
-            keywords=definition.keywords,
-            effect=definition.effect,
-            tapped=bool(permanent.get("tapped", False)),
-            summoning_sick=bool(permanent.get("summoning_sick", False)),
-            damage=int(permanent.get("damage", 0)),
-            power_modifier=int(permanent.get("power_modifier", 0)),
-            toughness_modifier=int(permanent.get("toughness_modifier", 0)),
+            base_id=card.base_id,
+            name=card.name,
+            card_type=card.card_type,
+            subtype=card.subtype,
+            colors=card.colors,
+            mana_cost=card.mana_cost,
+            power=card.power,
+            toughness=card.toughness,
+            keywords=card.keywords,
+            effect=card.effect,
+            owner=controller,
+            controller=controller,
+            tapped=bool(state.get("tapped", False)) if state else False,
+            summoning_sick=(bool(state.get("summoning_sick", False))
+                            and "Creature" in card.card_type) if state else False,
+            damage=int(state.get("damage", 0)) if state else 0,
+            power_modifier=int(state.get("power", card.power or 0)) - (card.power or 0) if state and "power" in state else 0,
+            toughness_modifier=int(state.get("toughness", card.toughness or 0)) - (card.toughness or 0) if state and "toughness" in state else 0,
         )
 
 
 @dataclass(frozen=True)
 class PlayerView:
+    """Read-only projection of a single player's visible state."""
     player_id: str
     life: int
     hand_count: int
@@ -149,6 +165,8 @@ class PlayerView:
     battlefield: tuple[CardView, ...]
     graveyard_count: int
     exile_count: int
+    graveyard: tuple[CardView, ...] = ()
+    mana_pool: Mapping[str, int] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -167,6 +185,7 @@ class ResourceSummary:
 
 @dataclass(frozen=True)
 class StackView:
+    """Read-only projection of an active spell or ability on the stack."""
     stack_item_id: str
     item_type: str
     source: CardView
@@ -176,6 +195,12 @@ class StackView:
 
 @dataclass(frozen=True)
 class GameView:
+    """
+    Complete read-only projection of the visible game state.
+
+    Used by the GUI layer to render the tabletop and determine which
+    actions are legally available to the player.
+    """
     player_id: str
     opponent_id: str
     lifecycle: str
@@ -201,7 +226,7 @@ class GameView:
         def player_view(pid: str) -> PlayerView:
             permanent_records = state.get("battlefield", {}).get(pid, ())
             battlefield = tuple(
-                CardView.from_instance(item["card_id"], catalog, item)
+                CardView.from_instance(item["id"], catalog, item, controller=pid)
                 for item in permanent_records
             )
             return PlayerView(
@@ -209,21 +234,26 @@ class GameView:
                 life=int(life_totals.get(pid, 20)),
                 hand_count=int(state.get("hand_counts", {}).get(pid, 0)),
                 library_count=int(state.get("library_counts", {}).get(pid, 0)),
-                land_played=bool(state.get("land_played", {}).get(pid, False)),
+                land_played=bool(state.get("land_played_this_turn", False)),
                 battlefield=battlefield,
                 graveyard_count=len(state.get("graveyard", {}).get(pid, ())),
                 exile_count=len(state.get("exile", {}).get(pid, ())),
+                graveyard=tuple(
+                    CardView.from_instance(card_id, catalog, controller=pid)
+                    for card_id in state.get("graveyard", {}).get(pid, ())
+                ),
+                mana_pool=dict(state.get("mana_pools", {}).get(pid, {})),
             )
 
         hand = tuple(
-            CardView.from_instance(card_id, catalog)
-            for card_id in state.get("hand", {}).get(player_id, ())
+            CardView.from_instance(card_id, catalog, controller=player_id)
+            for card_id in state.get("hand", ())
         )
         stack = tuple(
             StackView(
                 stack_item_id=item["stack_item_id"],
                 item_type=item["item_type"],
-                source=CardView.from_instance(item["source"], catalog),
+                source=CardView.from_instance(item["source"], catalog, controller=item["controller"]),
                 controller=item["controller"],
                 targets=tuple(item.get("targets", ())),
             )
@@ -266,8 +296,8 @@ def card_border_color(card: CardView) -> str:
 
 
 def resource_summary(player: PlayerView) -> ResourceSummary:
-    """Project visible resources without inventing a mana pool client-side."""
-    mana_sources: dict[str, int] = {}
+    """Project untapped mana sources plus the authoritative floating mana pool."""
+    mana_sources: dict[str, int] = dict(player.mana_pool)
     for permanent in player.battlefield:
         if permanent.tapped:
             continue
@@ -307,6 +337,30 @@ def bounded_activity_history(history: Sequence[str], message: str,
     return (*tuple(history), normalized)[-limit:]
 
 
+def selected_legal_attackers(view: GameView,
+                             selected_ids: Sequence[str]) -> tuple[CardView, ...]:
+    selected = set(selected_ids)
+    return tuple(
+        card for card in view.player.battlefield
+        if card.instance_id in selected
+        and "Creature" in card.card_type
+        and not card.tapped
+        and (not card.summoning_sick or "Haste" in card.keywords)
+        and "Defender" not in card.keywords
+    )
+
+
+def selected_legal_blockers(view: GameView,
+                            selected_ids: Sequence[str]) -> tuple[CardView, ...]:
+    selected = set(selected_ids)
+    return tuple(
+        card for card in view.player.battlefield
+        if card.instance_id in selected
+        and "Creature" in card.card_type
+        and not card.tapped
+    )
+
+
 def available_actions(view: GameView, selected_ids: list[str] | tuple[str, ...]) -> frozenset[str]:
     """Return only controls that can produce a supported request in this snapshot."""
     actions = {"concede"}
@@ -319,12 +373,12 @@ def available_actions(view: GameView, selected_ids: list[str] | tuple[str, ...])
 
     selected = set(selected_ids)
     selected_hand = [card for card in view.hand if card.instance_id in selected]
-    selected_own = [card for card in view.player.battlefield if card.instance_id in selected]
     main_phase = view.phase in {"PRECOMBAT_MAIN", "POSTCOMBAT_MAIN"}
 
     if len(selected_hand) == 1:
         card = selected_hand[0]
-        if (card.card_type == "Land" and view.is_active_player and main_phase
+        if (card.card_type == "Land" and view.has_priority
+                and view.is_active_player and main_phase
                 and not view.player.land_played and not view.stack):
             actions.add("play_land")
         elif card.card_type != "Land" and view.has_priority:
@@ -340,18 +394,13 @@ def available_actions(view: GameView, selected_ids: list[str] | tuple[str, ...])
         actions.add("discard")
 
     if view.phase == "DECLARE_ATTACKERS" and view.is_active_player:
-        legal_attackers = all(
-            "Creature" in card.card_type and not card.tapped
-            and (not card.summoning_sick or "Haste" in card.keywords)
-            and "Defender" not in card.keywords
-            for card in selected_own
-        )
-        if legal_attackers:
+        actions.add("declare_no_attackers")
+        if selected_legal_attackers(view, selected_ids):
             actions.add("declare_attackers")
     if view.phase == "DECLARE_BLOCKERS" and not view.is_active_player:
-        legal_blockers = all("Creature" in card.card_type and not card.tapped
-                             for card in selected_own)
-        if view.combat.get("attackers") and legal_blockers:
+        if view.combat.get("attackers"):
+            actions.add("declare_no_blockers")
+        if view.combat.get("attackers") and selected_legal_blockers(view, selected_ids):
             actions.add("declare_blockers")
     if view.phase == "ASSIGN_DAMAGE_ORDER" and view.is_active_player:
         actions.add("assign_damage_order")
@@ -360,11 +409,29 @@ def available_actions(view: GameView, selected_ids: list[str] | tuple[str, ...])
 
 def legal_target_options(view: GameView, card: CardDefinition) -> tuple[tuple[str, str], ...]:
     permanents = (*view.player.battlefield, *view.opponent.battlefield)
-    if card.base_id == "lightning_bolt":
-        players = ((view.player_id, f"{view.player_id} — player"),
-                   (view.opponent_id, f"{view.opponent_id} — player"))
+    if card.base_id in {"lightning_bolt", "shock", "rift_bolt"}:
+        players = ((view.opponent_id, f"{view.opponent_id} — opponent"),
+                   (view.player_id, f"{view.player_id} — you"))
         return players + tuple((item.instance_id, f"{item.name} — permanent")
-                               for item in permanents)
+                               for item in permanents if "Creature" in item.card_type)
+    if card.base_id in {"lava_spike", "mind_rot"}:
+        return ((view.opponent_id, f"{view.opponent_id} — opponent"),
+                (view.player_id, f"{view.player_id} — you"))
+    if card.base_id in {"doom_blade", "terror"}:
+        return tuple(
+            (item.instance_id, f"{item.name} — creature")
+            for item in permanents
+            if "Creature" in item.card_type
+            and "B" not in item.colors
+            and (card.base_id != "terror" or "Artifact" not in item.card_type)
+            and not any(keyword == "Protection from black" for keyword in item.keywords)
+        )
+    if card.base_id == "raise_dead":
+        return tuple(
+            (item.instance_id, f"{item.name} — your graveyard")
+            for item in view.player.graveyard
+            if "Creature" in item.card_type
+        )
     if card.base_id in {"unsummon", "giant_growth"}:
         return tuple((item.instance_id, f"{item.name} — creature") for item in permanents
                      if "Creature" in item.card_type)
