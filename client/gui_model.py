@@ -44,6 +44,8 @@ MANA_SOURCE_OUTPUTS = {
     "swamp": ("B", 1),
     "plains": ("W", 1),
     "sol_ring": ("C", 2),
+    "llanowar_elves": ("G", 1),
+    "elvish_mystic": ("G", 1),
 }
 
 

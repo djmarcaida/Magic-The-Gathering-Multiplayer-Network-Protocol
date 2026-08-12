@@ -608,7 +608,8 @@ class GameEngine:
             base = self.catalog.get(permanent.card_id).base_id
             produced = {"mountain": ("R", 1), "island": ("U", 1),
                         "forest": ("G", 1), "swamp": ("B", 1),
-                        "plains": ("W", 1), "sol_ring": ("C", 2)}.get(base)
+                        "plains": ("W", 1), "sol_ring": ("C", 2),
+                        "llanowar_elves": ("G", 1), "elvish_mystic": ("G", 1)}.get(base)
             if produced:
                 pool[produced[0]].append((permanent, produced[1]))
         chosen: list[PermanentState] = []

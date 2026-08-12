@@ -151,7 +151,7 @@ class GuiModelTests(unittest.TestCase):
         summary = resource_summary(GameView.from_state("p1", state, catalog).player)
 
         self.assertEqual(summary.mana_sources,
-                         {"R": 1, "G": 1, "W": 1, "U": 1, "B": 1, "C": 2})
+                         {"R": 1, "G": 2, "W": 1, "U": 1, "B": 1, "C": 2})
         self.assertEqual(summary.permanent_count, 8)
         self.assertEqual(summary.life, 20)
         self.assertEqual(summary.hand_count, 2)
