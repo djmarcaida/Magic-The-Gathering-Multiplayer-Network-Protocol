@@ -17,7 +17,7 @@ Open three terminals:
 ```powershell
 python -m server.main --host 127.0.0.1 --port 4444
 python -m client.gui_main --host 127.0.0.1 --port 4444 --id player_1 --deck decks/red.json
-python -m client.gui_main --host 127.0.0.1 --port 4444 --id player_2 --deck decks/blue.json
+python -m client.gui_main --host 127.0.0.1 --port 4444 --id player_2 --deck decks/black.json
 ```
 
 The connection options are optional for the GUI. Running `python -m client.gui_main` opens a form for the host, port, player ID, and deck file. Each client is a separate process, so the server still enforces exactly two simultaneous player connections.
@@ -37,7 +37,7 @@ Open three terminals:
 ```powershell
 python -m server.main --host 127.0.0.1 --port 4444
 python -m client.main --host 127.0.0.1 --port 4444 --id player_1 --deck decks/red.json
-python -m client.main --host 127.0.0.1 --port 4444 --id player_2 --deck decks/blue.json
+python -m client.main --host 127.0.0.1 --port 4444 --id player_2 --deck decks/black.json
 ```
 
 Add `--verbose` to any process to print each complete JSON PDU. The server also accepts `--reconnect-timeout SECONDS`.

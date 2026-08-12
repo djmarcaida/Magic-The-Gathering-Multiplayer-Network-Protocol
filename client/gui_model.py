@@ -26,9 +26,15 @@ PHASE_LABELS = {
     "CLEANUP": "Cleanup",
 }
 
-SUPPORTED_SPELL_EFFECTS = {"lightning_bolt", "counterspell", "unsummon", "giant_growth", "rift_bolt", "ponder", "rampant_growth"}
-TARGETED_SPELL_EFFECTS = {"lightning_bolt", "rift_bolt", "counterspell",
-                          "unsummon", "giant_growth"}
+SUPPORTED_SPELL_EFFECTS = {
+    "lightning_bolt", "shock", "lava_spike", "counterspell", "unsummon",
+    "giant_growth", "rift_bolt", "ponder", "rampant_growth", "dark_ritual",
+    "doom_blade", "terror", "mind_rot", "raise_dead",
+}
+TARGETED_SPELL_EFFECTS = {
+    "lightning_bolt", "shock", "lava_spike", "rift_bolt", "counterspell",
+    "unsummon", "giant_growth", "doom_blade", "terror", "mind_rot", "raise_dead",
+}
 
 CARD_BORDER_COLORS = {
     "W": "#F3DF9B",
@@ -158,6 +164,8 @@ class PlayerView:
     battlefield: tuple[CardView, ...]
     graveyard_count: int
     exile_count: int
+    graveyard: tuple[CardView, ...] = ()
+    mana_pool: Mapping[str, int] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -222,6 +230,11 @@ class GameView:
                 battlefield=battlefield,
                 graveyard_count=len(state.get("graveyard", {}).get(pid, ())),
                 exile_count=len(state.get("exile", {}).get(pid, ())),
+                graveyard=tuple(
+                    CardView.from_instance(card_id, catalog, controller=pid)
+                    for card_id in state.get("graveyard", {}).get(pid, ())
+                ),
+                mana_pool=dict(state.get("mana_pools", {}).get(pid, {})),
             )
 
         hand = tuple(
@@ -275,8 +288,8 @@ def card_border_color(card: CardView) -> str:
 
 
 def resource_summary(player: PlayerView) -> ResourceSummary:
-    """Project visible resources without inventing a mana pool client-side."""
-    mana_sources: dict[str, int] = {}
+    """Project untapped mana sources plus the authoritative floating mana pool."""
+    mana_sources: dict[str, int] = dict(player.mana_pool)
     for permanent in player.battlefield:
         if permanent.tapped:
             continue
@@ -388,11 +401,29 @@ def available_actions(view: GameView, selected_ids: list[str] | tuple[str, ...])
 
 def legal_target_options(view: GameView, card: CardDefinition) -> tuple[tuple[str, str], ...]:
     permanents = (*view.player.battlefield, *view.opponent.battlefield)
-    if card.base_id in {"lightning_bolt", "rift_bolt"}:
+    if card.base_id in {"lightning_bolt", "shock", "rift_bolt"}:
         players = ((view.opponent_id, f"{view.opponent_id} — opponent"),
                    (view.player_id, f"{view.player_id} — you"))
         return players + tuple((item.instance_id, f"{item.name} — permanent")
                                for item in permanents if "Creature" in item.card_type)
+    if card.base_id in {"lava_spike", "mind_rot"}:
+        return ((view.opponent_id, f"{view.opponent_id} — opponent"),
+                (view.player_id, f"{view.player_id} — you"))
+    if card.base_id in {"doom_blade", "terror"}:
+        return tuple(
+            (item.instance_id, f"{item.name} — creature")
+            for item in permanents
+            if "Creature" in item.card_type
+            and "B" not in item.colors
+            and (card.base_id != "terror" or "Artifact" not in item.card_type)
+            and not any(keyword == "Protection from black" for keyword in item.keywords)
+        )
+    if card.base_id == "raise_dead":
+        return tuple(
+            (item.instance_id, f"{item.name} — your graveyard")
+            for item in view.player.graveyard
+            if "Creature" in item.card_type
+        )
     if card.base_id in {"unsummon", "giant_growth"}:
         return tuple((item.instance_id, f"{item.name} — creature") for item in permanents
                      if "Creature" in item.card_type)

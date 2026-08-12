@@ -73,6 +73,7 @@ class PlayerState:
     battlefield: list[PermanentState] = field(default_factory=list)
     graveyard: list[str] = field(default_factory=list)
     exile: list[str] = field(default_factory=list)
+    mana_pool: dict[str, int] = field(default_factory=dict)
     land_played: bool = False
     mulligans: int = 0
     kept: bool = False
@@ -136,6 +137,7 @@ class GameState:
             "priority_holder": self.priority_holder,
             "priority_token": self.priority_token if self.priority_holder == player_id else None,
             "life_totals": {pid: p.life for pid, p in self.players.items()},
+            "mana_pools": {pid: dict(p.mana_pool) for pid, p in self.players.items()},
             "hand": list(self.players[player_id].hand),
             "hand_counts": {pid: len(p.hand) for pid, p in self.players.items()},
             "library_counts": {pid: len(p.library) for pid, p in self.players.items()},

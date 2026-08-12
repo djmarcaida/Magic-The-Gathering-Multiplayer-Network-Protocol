@@ -64,6 +64,81 @@ class RequiredCardEffectTests(unittest.TestCase):
         self.assertEqual(error["code"], "ILLEGAL_TARGET")
         self.assertIn("lightning_bolt_001", engine.state.players[caster].hand)
 
+    def test_shock_deals_two_and_lava_spike_only_targets_players(self):
+        engine = playing_engine()
+        caster = engine.state.active_player
+        target = engine.state.opponent_of(caster)
+        give_cast(engine, caster, "shock_001", ["mountain_020"], [target])
+        pass_twice(engine)
+        self.assertEqual(engine.state.players[target].life, 18)
+
+        creature = PermanentState("ornithopter_001", target, target, summoning_sick=False)
+        engine.state.players[target].battlefield.append(creature)
+        outgoing = give_cast(engine, caster, "lava_spike_001",
+                             ["mountain_019"], [creature.card_id])
+        self.assertEqual(outgoing[0].pdu["code"], "ILLEGAL_TARGET")
+        self.assertEqual(creature.damage, 0)
+
+    def test_dark_ritual_pool_pays_for_doom_blade_and_empties_on_transition(self):
+        engine = playing_engine()
+        caster = engine.state.active_player
+        target_player = engine.state.opponent_of(caster)
+        target = PermanentState("wall_of_stone_001", target_player, target_player,
+                                summoning_sick=False)
+        engine.state.players[target_player].battlefield.append(target)
+
+        give_cast(engine, caster, "dark_ritual_001", ["swamp_020"], [])
+        pass_twice(engine)
+        self.assertEqual(engine.state.players[caster].mana_pool, {"B": 3})
+
+        give_cast(engine, caster, "doom_blade_001", [], [target.card_id])
+        pass_twice(engine)
+        self.assertIsNone(engine.state.permanent(target.card_id))
+        self.assertIn(target.card_id, engine.state.players[target_player].graveyard)
+        self.assertEqual(engine.state.players[caster].mana_pool, {"B": 1})
+
+        engine._transition(engine.state.phase, Phase.BEGIN_COMBAT)
+        self.assertEqual(engine.state.players[caster].mana_pool, {})
+
+    def test_doom_blade_and_terror_enforce_black_and_artifact_restrictions(self):
+        engine = playing_engine()
+        caster = engine.state.active_player
+        opponent = engine.state.opponent_of(caster)
+        black = PermanentState("black_knight_001", opponent, opponent,
+                               summoning_sick=False)
+        artifact = PermanentState("ornithopter_001", opponent, opponent,
+                                  summoning_sick=False)
+        engine.state.players[opponent].battlefield.extend([black, artifact])
+
+        doom = give_cast(engine, caster, "doom_blade_001",
+                         ["swamp_019", "swamp_020"], [black.card_id])
+        self.assertEqual(doom[0].pdu["code"], "ILLEGAL_TARGET")
+        terror = give_cast(engine, caster, "terror_001",
+                           ["swamp_017", "swamp_018"], [artifact.card_id])
+        self.assertEqual(terror[0].pdu["code"], "ILLEGAL_TARGET")
+
+    def test_mind_rot_discards_two_and_raise_dead_recovers_a_creature(self):
+        engine = playing_engine()
+        caster = engine.state.active_player
+        opponent = engine.state.opponent_of(caster)
+        opponent_state = engine.state.players[opponent]
+        opponent_state.hand = ["mountain_001", "goblin_guide_001", "shock_001"]
+
+        give_cast(engine, caster, "mind_rot_001",
+                  ["swamp_018", "swamp_019", "swamp_020"], [opponent])
+        pass_twice(engine)
+        self.assertEqual(opponent_state.hand, ["mountain_001"])
+        self.assertEqual(opponent_state.graveyard[-2:],
+                         ["goblin_guide_001", "shock_001"])
+
+        caster_state = engine.state.players[caster]
+        caster_state.graveyard.append("black_knight_002")
+        give_cast(engine, caster, "raise_dead_001", ["swamp_017"],
+                  ["black_knight_002"])
+        pass_twice(engine)
+        self.assertIn("black_knight_002", caster_state.hand)
+        self.assertNotIn("black_knight_002", caster_state.graveyard)
+
     def test_counterspell_removes_target_spell_from_stack(self):
         engine = playing_engine()
         caster = engine.state.active_player

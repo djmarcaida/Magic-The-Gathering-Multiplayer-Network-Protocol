@@ -1,3 +1,4 @@
+import json
 import unittest
 from pathlib import Path
 
@@ -41,6 +42,13 @@ class CardCatalogTests(unittest.TestCase):
     def test_deck_accepts_one_to_fifty_distinct_supplied_instances(self):
         deck = list(self.catalog.instances)[:50]
         self.assertEqual(self.catalog.validate_deck(deck), tuple(deck))
+
+    def test_focused_red_and_black_decks_are_valid_twelve_card_lists(self):
+        for name in ("red", "black"):
+            deck = json.loads((ROOT / "decks" / f"{name}.json").read_text(encoding="utf-8"))
+            with self.subTest(deck=name):
+                self.assertEqual(len(deck), 12)
+                self.assertEqual(self.catalog.validate_deck(deck), tuple(deck))
 
 
 if __name__ == "__main__":

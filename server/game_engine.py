@@ -345,18 +345,27 @@ class GameEngine:
                 or self.state.phase not in {Phase.PRECOMBAT_MAIN, Phase.POSTCOMBAT_MAIN}
                 or self.state.stack):
             raise ActionError("WRONG_PHASE", "non-instant spells require your empty-stack main phase")
-        supported_effects = {"lightning_bolt", "counterspell", "unsummon", "giant_growth", "rift_bolt", "ponder", "rampant_growth"}
+        supported_effects = {
+            "lightning_bolt", "shock", "lava_spike", "counterspell", "unsummon",
+            "giant_growth", "rift_bolt", "ponder", "rampant_growth", "dark_ritual",
+            "doom_blade", "terror", "mind_rot", "raise_dead",
+        }
         if card.card_type in {"Instant", "Sorcery"} and card.base_id not in supported_effects:
             raise ActionError("ILLEGAL_ACTION", "this baseline does not implement that spell effect")
         targets = pdu["targets"]
         if not isinstance(targets, list):
             raise ActionError("ILLEGAL_TARGET", "targets must be a list")
-        self._validate_spell_targets(card.base_id, targets)
+        self._validate_spell_targets(card.base_id, targets, player_id)
         sources = pdu["mana_payment"]
         if not isinstance(sources, dict):
             raise ActionError("INSUFFICIENT_MANA", "mana_payment must be a color-count object")
-        permanents = self._validate_mana_payment(player_id, sources, dict(card.mana_cost))
+        permanents, pool_spent = self._validate_mana_payment(
+            player_id, sources, dict(card.mana_cost))
         self.priority.act(player_id, pdu["seq_num"])
+        for color, amount in pool_spent.items():
+            player.mana_pool[color] -= amount
+            if player.mana_pool[color] == 0:
+                del player.mana_pool[color]
         for permanent in permanents:
             permanent.tapped = True
         player.hand.remove(card_id)
@@ -442,9 +451,14 @@ class GameEngine:
             for card_id in blocker_ids:
                 permanent = self.state.permanent(card_id)
                 card = self.catalog.get(card_id)
+                attacker_card = self.catalog.get(attacker)
                 if (card_id in used or permanent is None or permanent.controller != player_id
                         or permanent.tapped or "Creature" not in card.card_type):
                     raise ActionError("ILLEGAL_ACTION", f"illegal blocker: {card_id}")
+                if "Flying" in attacker_card.keywords and "Flying" not in card.keywords:
+                    raise ActionError("ILLEGAL_ACTION", f"creature cannot block a flying attacker: {card_id}")
+                if self._has_protection_from(self.state.permanent(attacker), card):
+                    raise ActionError("ILLEGAL_ACTION", "protection prevents this block")
                 used.add(card_id)
             normalized[attacker] = list(blocker_ids)
         self.state.combat.blockers = normalized
@@ -515,15 +529,39 @@ class GameEngine:
                 self.state.players[self.state.opponent_of(item.controller)].life -= devotion
                 self.state.players[item.controller].life += devotion
                 changes.append({"change_type": "GRAY_MERCHANT", "amount": devotion})
-        elif not self._targets_still_legal(base, item.targets):
+        elif not self._targets_still_legal(base, item.targets, item.controller):
             result = "FIZZLE"
-        elif base == "lightning_bolt" or base == "rift_bolt":
+        elif base in {"lightning_bolt", "shock", "lava_spike", "rift_bolt"}:
             target = item.targets[0]
-            if "player_" in target:
-                self.state.players[target].life -= 3
+            amount = 2 if base == "shock" else 3
+            if target in self.state.players:
+                self.state.players[target].life -= amount
             else:
-                self.state.permanent(target).damage += 3
-            changes.append({"change_type": "DAMAGE", "target": target, "amount": 3})
+                self.state.permanent(target).damage += amount
+            changes.append({"change_type": "DAMAGE", "target": target, "amount": amount})
+        elif base == "dark_ritual":
+            player = self.state.players[item.controller]
+            player.mana_pool["B"] = player.mana_pool.get("B", 0) + 3
+            changes.append({"change_type": "MANA_ADDED", "player": item.controller,
+                            "color": "B", "amount": 3})
+        elif base in {"doom_blade", "terror"}:
+            permanent = self.state.permanent(item.targets[0])
+            self.state.players[permanent.controller].battlefield.remove(permanent)
+            self.state.players[permanent.owner].graveyard.append(permanent.card_id)
+            changes.append({"change_type": "DESTROYED", "card_id": permanent.card_id})
+        elif base == "mind_rot":
+            target = self.state.players[item.targets[0]]
+            discarded = target.hand[-2:]
+            del target.hand[len(target.hand) - len(discarded):]
+            target.graveyard.extend(discarded)
+            changes.extend({"change_type": "DISCARDED", "player": target.player_id,
+                            "card_id": card_id} for card_id in discarded)
+        elif base == "raise_dead":
+            player = self.state.players[item.controller]
+            card_id = item.targets[0]
+            player.graveyard.remove(card_id)
+            player.hand.append(card_id)
+            changes.append({"change_type": "RETURNED_TO_HAND", "card_id": card_id})
         elif base == "ponder":
             player = self.state.players[item.controller]
             if player.library:
@@ -591,35 +629,68 @@ class GameEngine:
             outgoing.extend(self.snapshot_updates())
         return outgoing
 
-    def _validate_spell_targets(self, base_id: str, targets: list[str]) -> None:
+    def _validate_spell_targets(self, base_id: str, targets: list[str],
+                                controller: str | None = None) -> None:
         assert self.state is not None
-        if base_id in {"lightning_bolt", "rift_bolt"}:
+        if base_id in {"lightning_bolt", "shock", "rift_bolt"}:
             target = targets[0] if len(targets) == 1 else None
             permanent = self.state.permanent(target) if target is not None else None
             if (target not in self.state.players
                     and (permanent is None
                          or "Creature" not in self.catalog.get(permanent.card_id).card_type)):
                 raise ActionError("ILLEGAL_TARGET", "spell requires a player or creature target")
+            if (permanent is not None
+                    and self._has_protection_from(permanent, self.catalog.definitions[base_id])):
+                raise ActionError("ILLEGAL_TARGET", "target has protection from this spell")
+        elif base_id == "lava_spike":
+            if len(targets) != 1 or targets[0] not in self.state.players:
+                raise ActionError("ILLEGAL_TARGET", "Lava Spike requires a player target")
+        elif base_id in {"doom_blade", "terror"}:
+            if len(targets) != 1:
+                raise ActionError("ILLEGAL_TARGET", "spell requires a creature target")
+            permanent = self.state.permanent(targets[0])
+            if permanent is None:
+                raise ActionError("ILLEGAL_TARGET", "target creature is not on the battlefield")
+            card = self.catalog.get(permanent.card_id)
+            if "Creature" not in card.card_type or "B" in card.colors:
+                raise ActionError("ILLEGAL_TARGET", "target must be a nonblack creature")
+            if base_id == "terror" and "Artifact" in card.card_type:
+                raise ActionError("ILLEGAL_TARGET", "Terror cannot target an artifact creature")
+            if self._has_protection_from(permanent, self.catalog.definitions[base_id]):
+                raise ActionError("ILLEGAL_TARGET", "target has protection from this spell")
+        elif base_id == "mind_rot":
+            if len(targets) != 1 or targets[0] not in self.state.players:
+                raise ActionError("ILLEGAL_TARGET", "Mind Rot requires a player target")
+        elif base_id == "raise_dead":
+            if len(targets) != 1:
+                raise ActionError("ILLEGAL_TARGET", "Raise Dead requires a creature card target")
+            graveyard = self.state.players[controller].graveyard if controller else []
+            if targets[0] not in graveyard or "Creature" not in self.catalog.get(targets[0]).card_type:
+                raise ActionError("ILLEGAL_TARGET", "target must be a creature card in your graveyard")
         elif base_id in {"unsummon", "giant_growth"}:
             if len(targets) != 1 or self.state.permanent(targets[0]) is None:
                 raise ActionError("ILLEGAL_TARGET", "spell requires a creature target")
             if "Creature" not in self.catalog.get(targets[0]).card_type:
                 raise ActionError("ILLEGAL_TARGET", "target is not a creature")
+            if self._has_protection_from(
+                    self.state.permanent(targets[0]), self.catalog.definitions[base_id]):
+                raise ActionError("ILLEGAL_TARGET", "target has protection from this spell")
         elif base_id == "counterspell":
             if len(targets) != 1 or not any(x.stack_item_id == targets[0] for x in self.state.stack):
                 raise ActionError("ILLEGAL_TARGET", "Counterspell requires a spell on the stack")
         elif targets:
             raise ActionError("ILLEGAL_TARGET", "this spell takes no target")
 
-    def _targets_still_legal(self, base_id: str, targets: list[str]) -> bool:
+    def _targets_still_legal(self, base_id: str, targets: list[str],
+                             controller: str | None = None) -> bool:
         try:
-            self._validate_spell_targets(base_id, targets)
+            self._validate_spell_targets(base_id, targets, controller)
             return True
         except ActionError:
             return False
 
     def _validate_mana_payment(self, player_id: str, payment: dict[str, object],
-                               cost: dict[str, int]) -> list[PermanentState]:
+                               cost: dict[str, int]) -> tuple[list[PermanentState], dict[str, int]]:
         assert self.state is not None
         allowed = {"W", "U", "B", "R", "G", "C", "X"}
         if (any(key not in allowed for key in payment)
@@ -631,6 +702,8 @@ class GameEngine:
                 raise ActionError("INSUFFICIENT_MANA", f"declared {color} payment does not match cost")
         if payment.get("X", 0) != cost.get("generic", 0):
             raise ActionError("INSUFFICIENT_MANA", "declared generic payment does not match cost")
+        available_pool = dict(self.state.players[player_id].mana_pool)
+        pool_spent: dict[str, int] = {}
         pool: dict[str, list[tuple[PermanentState, int]]] = {key: [] for key in allowed - {"X"}}
         for permanent in self.state.players[player_id].battlefield:
             if permanent.tapped:
@@ -645,6 +718,11 @@ class GameEngine:
         chosen: list[PermanentState] = []
         for color in ("W", "U", "B", "R", "G", "C"):
             needed = cost.get(color, 0)
+            from_pool = min(needed, available_pool.get(color, 0))
+            if from_pool:
+                pool_spent[color] = from_pool
+                available_pool[color] -= from_pool
+                needed -= from_pool
             while needed > 0 and pool[color]:
                 permanent, amount = pool[color].pop(0)
                 chosen.append(permanent)
@@ -652,6 +730,14 @@ class GameEngine:
             if needed > 0:
                 raise ActionError("INSUFFICIENT_MANA", f"not enough untapped {color} sources")
         generic = cost.get("generic", 0)
+        for color in ("W", "U", "B", "R", "G", "C"):
+            if generic <= 0:
+                break
+            from_pool = min(generic, available_pool.get(color, 0))
+            if from_pool:
+                pool_spent[color] = pool_spent.get(color, 0) + from_pool
+                available_pool[color] -= from_pool
+                generic -= from_pool
         remaining = [source for sources in pool.values() for source in sources]
         while generic > 0 and remaining:
             permanent, amount = remaining.pop(0)
@@ -660,7 +746,19 @@ class GameEngine:
                 generic -= amount
         if generic > 0:
             raise ActionError("INSUFFICIENT_MANA", "not enough untapped sources for generic cost")
-        return chosen
+        return chosen, pool_spent
+
+    def _has_protection_from(self, permanent: PermanentState | None, source: object) -> bool:
+        if permanent is None:
+            return False
+        protected = self.catalog.get(permanent.card_id)
+        source_colors = set(getattr(source, "colors", ()))
+        protections = {keyword.removeprefix("Protection from ").lower()
+                       for keyword in protected.keywords
+                       if keyword.startswith("Protection from ")}
+        color_names = {"W": "white", "U": "blue", "B": "black",
+                       "R": "red", "G": "green"}
+        return any(color_names.get(color) in protections for color in source_colors)
 
     def _state_based_actions(self) -> list[str]:
         assert self.state is not None
@@ -705,6 +803,8 @@ class GameEngine:
                         if blocker is None or remaining <= 0:
                             continue
                         blocker_card = self.catalog.get(blocker_id)
+                        if self._has_protection_from(blocker, attacker_card):
+                            continue
                         lethal = max(0, blocker_card.toughness + blocker.toughness_modifier - blocker.damage)
                         amount = min(remaining, lethal)
                         if blocker_id == order_ids[-1]:
@@ -718,8 +818,10 @@ class GameEngine:
                     blocker_double = "Double strike" in blocker_card.keywords
                     if blocker_double or blocker_first == first_strike:
                         amount = blocker_card.power + blocker.power_modifier
-                        attacker.damage += amount
-                        events.append({"source": blocker.card_id, "target": attacker_id, "amount": amount})
+                        if not self._has_protection_from(attacker, blocker_card):
+                            attacker.damage += amount
+                            events.append({"source": blocker.card_id, "target": attacker_id,
+                                           "amount": amount})
         dead = self._state_based_actions()
         result = Outbound(None, self._pdu("COMBAT_DAMAGE_RESULT", damage_events=events,
                                           life_totals={p: s.life for p, s in self.state.players.items()},
@@ -739,6 +841,8 @@ class GameEngine:
     def _transition(self, old: str | Phase, new: Phase) -> Outbound:
         assert self.state is not None
         old_value = old.value if isinstance(old, Phase) else old
+        for player in self.state.players.values():
+            player.mana_pool.clear()
         self.state.phase = new
         return Outbound(None, self._pdu("PHASE_TRANSITION", from_phase=old_value,
                                         to_phase=new.value,

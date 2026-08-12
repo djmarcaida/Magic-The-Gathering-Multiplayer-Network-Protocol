@@ -205,8 +205,12 @@ class GuiModelTests(unittest.TestCase):
                 self.assertIn("cast_spell", available_actions(supported, [card_id]))
 
         state["hand"] = ["shock_001"]
+        supported_burn = GameView.from_state("p1", state, catalog)
+        self.assertIn("cast_spell", available_actions(supported_burn, ["shock_001"]))
+
+        state["hand"] = ["naturalize_001"]
         unsupported = GameView.from_state("p1", state, catalog)
-        self.assertNotIn("cast_spell", available_actions(unsupported, ["shock_001"]))
+        self.assertNotIn("cast_spell", available_actions(unsupported, ["naturalize_001"]))
 
         state["phase"] = "UPKEEP"
         wrong_phase = GameView.from_state("p1", state, catalog)
@@ -266,20 +270,34 @@ class GuiModelTests(unittest.TestCase):
         }]
         state["stack"] = [{"stack_item_id": "stk_4", "item_type": "SPELL",
                            "source": "shock_001", "controller": "p2", "targets": ["p1"]}]
+        state["battlefield"]["p2"].append({
+            "id": "black_knight_001", "owner": "p2", "controller": "p2",
+            "tapped": False, "summoning_sick": False, "damage": 0,
+            "power_modifier": 0, "toughness_modifier": 0,
+        })
+        state["graveyard"]["p1"] = ["black_knight_002", "swamp_001"]
         view = GameView.from_state("p1", state, catalog)
 
         bolt_targets = dict(legal_target_options(view, catalog.card("lightning_bolt_003")))
+        shock_targets = dict(legal_target_options(view, catalog.card("shock_001")))
         rift_bolt_targets = dict(legal_target_options(view, catalog.card("rift_bolt_003")))
         counter_targets = dict(legal_target_options(view, catalog.card("counterspell_001")))
         growth_targets = dict(legal_target_options(view, catalog.card("giant_growth_001")))
+        doom_targets = dict(legal_target_options(view, catalog.card("doom_blade_001")))
+        terror_targets = dict(legal_target_options(view, catalog.card("terror_001")))
+        raise_targets = dict(legal_target_options(view, catalog.card("raise_dead_001")))
 
         self.assertEqual(next(iter(bolt_targets)), "p2")
         self.assertIn("p2", bolt_targets)
         self.assertIn("ornithopter_001", bolt_targets)
         self.assertNotIn("mountain_002", bolt_targets)
+        self.assertEqual(shock_targets, bolt_targets)
         self.assertEqual(rift_bolt_targets, bolt_targets)
         self.assertEqual(set(counter_targets), {"stk_4"})
-        self.assertEqual(set(growth_targets), {"ornithopter_001"})
+        self.assertEqual(set(growth_targets), {"ornithopter_001", "black_knight_001"})
+        self.assertEqual(set(doom_targets), {"ornithopter_001"})
+        self.assertEqual(terror_targets, {})
+        self.assertEqual(set(raise_targets), {"black_knight_002"})
 
     @staticmethod
     def _state():
