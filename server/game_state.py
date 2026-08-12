@@ -48,6 +48,13 @@ class PermanentState:
     damage: int = 0
     power_modifier: int = 0
     toughness_modifier: int = 0
+    attached_to: str | None = None
+    temporary_keywords: list[str] = field(default_factory=list)
+    protection_colors: list[str] = field(default_factory=list)
+    regeneration_shields: int = 0
+    damage_prevention: int = 0
+    cant_regenerate: bool = False
+    opponent_hexproof: bool = False
 
 
 @dataclass
@@ -80,6 +87,9 @@ class PlayerState:
     graveyard: list[str] = field(default_factory=list)
     exile: list[str] = field(default_factory=list)
     mana_pool: dict[str, int] = field(default_factory=dict)
+    suspended: dict[str, int] = field(default_factory=dict)
+    madness_cards: list[str] = field(default_factory=list)
+    damage_prevention: int = 0
     land_played: bool = False
     mulligans: int = 0
     kept: bool = False
@@ -104,6 +114,8 @@ class GameState:
     priority_token: int | None = None
     stack: list[StackItem] = field(default_factory=list)
     combat: CombatState = field(default_factory=CombatState)
+    life_gain_locked: bool = False
+    damage_prevention_locked: bool = False
 
     @classmethod
     def new(cls, players: tuple[str, str], decks: dict[str, list[str]],
@@ -132,6 +144,10 @@ class GameState:
             d: dict[str, object] = {
                 "id": permanent.card_id,
                 "tapped": permanent.tapped,
+                "attached_to": permanent.attached_to,
+                "temporary_keywords": list(permanent.temporary_keywords),
+                "protection_colors": list(permanent.protection_colors),
+                "regeneration_shields": permanent.regeneration_shields,
             }
             if "Creature" in card.card_type:
                 d["damage"] = permanent.damage
@@ -150,6 +166,8 @@ class GameState:
             "priority_token": self.priority_token if self.priority_holder == player_id else None,
             "life_totals": {pid: p.life for pid, p in self.players.items()},
             "mana_pools": {pid: dict(p.mana_pool) for pid, p in self.players.items()},
+            "suspended": {pid: dict(p.suspended) for pid, p in self.players.items()},
+            "madness": list(self.players[player_id].madness_cards),
             "hand": list(self.players[player_id].hand),
             "hand_counts": {pid: len(p.hand) for pid, p in self.players.items()},
             "library_counts": {pid: len(p.library) for pid, p in self.players.items()},

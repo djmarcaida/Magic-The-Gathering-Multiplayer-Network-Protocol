@@ -209,8 +209,8 @@ class GuiModelTests(unittest.TestCase):
         self.assertIn("cast_spell", available_actions(supported_burn, ["shock_001"]))
 
         state["hand"] = ["naturalize_001"]
-        unsupported = GameView.from_state("p1", state, catalog)
-        self.assertNotIn("cast_spell", available_actions(unsupported, ["naturalize_001"]))
+        supported_removal = GameView.from_state("p1", state, catalog)
+        self.assertIn("cast_spell", available_actions(supported_removal, ["naturalize_001"]))
 
         state["phase"] = "UPKEEP"
         wrong_phase = GameView.from_state("p1", state, catalog)

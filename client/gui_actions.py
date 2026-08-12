@@ -88,13 +88,14 @@ def dispatch_gui_action(controller, action: str, selected: Sequence[str] = (),
             _one(selected),
             parse_identifiers(str(fields.get("targets", ""))),
             parse_mana(str(fields.get("mana", ""))),
+            dict(fields.get("choices", {})),
         )
     if action == "activate_ability":
         return controller.activate_ability(
             _one(selected),
             int(fields.get("ability_index", 0)),
             parse_identifiers(str(fields.get("targets", ""))),
-            parse_identifiers(str(fields.get("cost", ""))),
+            dict(fields.get("cost_payment", {})),
         )
     if action == "declare_attackers":
         return controller.declare_attackers(selected)

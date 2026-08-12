@@ -41,13 +41,14 @@ class ClientController:
     def pass_priority(self): return self._send("PRIORITY_PASS", token=self.store.priority_token)
     def play_land(self, card_id): return self._send("PLAY_LAND", token=self._action_token(),
                                                     card_id=card_id)
-    def cast_spell(self, card_id, targets=(), mana_payment=None):
+    def cast_spell(self, card_id, targets=(), mana_payment=None, choices=None):
         return self._send("CAST_SPELL", token=self._action_token(), card_id=card_id,
-                          targets=list(targets), mana_payment=dict(mana_payment or {}))
-    def activate_ability(self, source_id, ability_index, targets=(), cost_payment=()):
+                          targets=list(targets), mana_payment=dict(mana_payment or {}),
+                          choices=dict(choices or {}))
+    def activate_ability(self, source_id, ability_index, targets=(), cost_payment=None):
         return self._send("ACTIVATE_ABILITY", token=self._action_token(), source_id=source_id,
                           ability_index=int(ability_index), targets=list(targets),
-                          cost_payment=list(cost_payment))
+                          cost_payment=dict(cost_payment or {}))
     def declare_attackers(self, attackers): return self._send("DECLARE_ATTACKERS",
                                                                token=self._action_token(),
                                                                attackers=list(attackers))

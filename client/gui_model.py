@@ -27,13 +27,25 @@ PHASE_LABELS = {
 }
 
 SUPPORTED_SPELL_EFFECTS = {
-    "lightning_bolt", "shock", "lava_spike", "counterspell", "unsummon",
-    "giant_growth", "rift_bolt", "ponder", "rampant_growth", "dark_ritual",
-    "doom_blade", "terror", "mind_rot", "raise_dead",
+    "lightning_bolt", "shock", "lava_spike", "flame_slash", "searing_spear",
+    "skullcrack", "rift_bolt", "incinerate", "counterspell", "cancel",
+    "unsummon", "ponder", "negate", "mana_leak", "giant_growth",
+    "rampant_growth", "naturalize", "vines_of_vastwood", "swords_to_plowshares",
+    "path_to_exile", "healing_salve", "dark_ritual", "terror", "doom_blade",
+    "raise_dead", "mind_rot",
 }
 TARGETED_SPELL_EFFECTS = {
-    "lightning_bolt", "shock", "lava_spike", "rift_bolt", "counterspell",
-    "unsummon", "giant_growth", "doom_blade", "terror", "mind_rot", "raise_dead",
+    "lightning_bolt", "shock", "lava_spike", "flame_slash", "searing_spear",
+    "skullcrack", "rift_bolt", "incinerate", "counterspell", "cancel", "negate",
+    "mana_leak", "unsummon", "giant_growth", "vines_of_vastwood", "naturalize",
+    "swords_to_plowshares", "path_to_exile", "healing_salve", "doom_blade",
+    "terror", "mind_rot", "raise_dead", "pacifism", "gravedigger",
+}
+
+ACTIVATED_ABILITY_CARDS = {
+    "sol_ring", "llanowar_elves", "elvish_mystic", "merfolk_looter",
+    "prodigal_sorcerer", "troll_ascetic", "mother_of_runes", "royal_assassin",
+    "millstone", "rod_of_ruin",
 }
 
 CARD_BORDER_COLORS = {
@@ -125,6 +137,8 @@ class CardView:
     toughness_modifier: int = 0
     owner: str = ""
     controller: str = ""
+    attached_to: str | None = None
+    cast_from_madness: bool = False
 
     @classmethod
     def from_instance(cls, instance_id: str, catalog: CardCatalog,
@@ -141,10 +155,13 @@ class CardView:
             mana_cost=card.mana_cost,
             power=card.power,
             toughness=card.toughness,
-            keywords=card.keywords,
+            keywords=tuple(dict.fromkeys((*card.keywords,
+                                         *tuple(state.get("temporary_keywords", ()))))) if state else card.keywords,
             effect=card.effect,
             owner=controller,
             controller=controller,
+            attached_to=state.get("attached_to") if state else None,
+            cast_from_madness=bool(state.get("cast_from_madness", False)) if state else False,
             tapped=bool(state.get("tapped", False)) if state else False,
             summoning_sick=(bool(state.get("summoning_sick", False))
                             and "Creature" in card.card_type) if state else False,
@@ -248,6 +265,10 @@ class GameView:
         hand = tuple(
             CardView.from_instance(card_id, catalog, controller=player_id)
             for card_id in state.get("hand", ())
+        ) + tuple(
+            CardView.from_instance(card_id, catalog, controller=player_id,
+                                   state={"cast_from_madness": True})
+            for card_id in state.get("madness", ())
         )
         stack = tuple(
             StackView(
@@ -299,7 +320,8 @@ def resource_summary(player: PlayerView) -> ResourceSummary:
     """Project untapped mana sources plus the authoritative floating mana pool."""
     mana_sources: dict[str, int] = dict(player.mana_pool)
     for permanent in player.battlefield:
-        if permanent.tapped:
+        if (permanent.tapped
+                or ("Creature" in permanent.card_type and permanent.summoning_sick)):
             continue
         output = MANA_SOURCE_OUTPUTS.get(permanent.base_id)
         if output is None:
@@ -340,6 +362,9 @@ def bounded_activity_history(history: Sequence[str], message: str,
 def selected_legal_attackers(view: GameView,
                              selected_ids: Sequence[str]) -> tuple[CardView, ...]:
     selected = set(selected_ids)
+    pacified = {card.attached_to for card in (*view.player.battlefield,
+                                               *view.opponent.battlefield)
+                if card.base_id == "pacifism"}
     return tuple(
         card for card in view.player.battlefield
         if card.instance_id in selected
@@ -347,17 +372,22 @@ def selected_legal_attackers(view: GameView,
         and not card.tapped
         and (not card.summoning_sick or "Haste" in card.keywords)
         and "Defender" not in card.keywords
+        and card.instance_id not in pacified
     )
 
 
 def selected_legal_blockers(view: GameView,
                             selected_ids: Sequence[str]) -> tuple[CardView, ...]:
     selected = set(selected_ids)
+    pacified = {card.attached_to for card in (*view.player.battlefield,
+                                               *view.opponent.battlefield)
+                if card.base_id == "pacifism"}
     return tuple(
         card for card in view.player.battlefield
         if card.instance_id in selected
         and "Creature" in card.card_type
         and not card.tapped
+        and card.instance_id not in pacified
     )
 
 
@@ -384,10 +414,18 @@ def available_actions(view: GameView, selected_ids: list[str] | tuple[str, ...])
         elif card.card_type != "Land" and view.has_priority:
             supported = (card.card_type not in {"Instant", "Sorcery"}
                          or card.base_id in SUPPORTED_SPELL_EFFECTS)
-            timing = card.card_type == "Instant" or (
+            timing = card.card_type == "Instant" or card.cast_from_madness or (
                 view.is_active_player and main_phase and not view.stack)
             if supported and timing:
                 actions.add("cast_spell")
+    selected_own = [card for card in view.player.battlefield if card.instance_id in selected]
+    if (len(selected_own) == 1 and view.has_priority
+            and selected_own[0].base_id in ACTIVATED_ABILITY_CARDS
+            and not selected_own[0].tapped
+            and (not selected_own[0].summoning_sick
+                 or "Creature" not in selected_own[0].card_type
+                 or selected_own[0].base_id == "troll_ascetic")):
+        actions.add("activate_ability")
 
     discard_needed = max(0, view.player.hand_count - 7)
     if view.phase == "CLEANUP" and discard_needed > 0 and len(selected_hand) == discard_needed:
@@ -409,7 +447,8 @@ def available_actions(view: GameView, selected_ids: list[str] | tuple[str, ...])
 
 def legal_target_options(view: GameView, card: CardDefinition) -> tuple[tuple[str, str], ...]:
     permanents = (*view.player.battlefield, *view.opponent.battlefield)
-    if card.base_id in {"lightning_bolt", "shock", "rift_bolt"}:
+    if card.base_id in {"lightning_bolt", "shock", "searing_spear", "skullcrack",
+                        "rift_bolt", "incinerate", "healing_salve"}:
         players = ((view.opponent_id, f"{view.opponent_id} — opponent"),
                    (view.player_id, f"{view.player_id} — you"))
         return players + tuple((item.instance_id, f"{item.name} — permanent")
@@ -417,6 +456,11 @@ def legal_target_options(view: GameView, card: CardDefinition) -> tuple[tuple[st
     if card.base_id in {"lava_spike", "mind_rot"}:
         return ((view.opponent_id, f"{view.opponent_id} — opponent"),
                 (view.player_id, f"{view.player_id} — you"))
+    if card.base_id in {"flame_slash", "unsummon", "giant_growth",
+                        "vines_of_vastwood", "swords_to_plowshares",
+                        "path_to_exile", "pacifism"}:
+        return tuple((item.instance_id, f"{item.name} — creature") for item in permanents
+                     if "Creature" in item.card_type)
     if card.base_id in {"doom_blade", "terror"}:
         return tuple(
             (item.instance_id, f"{item.name} — creature")
@@ -432,11 +476,17 @@ def legal_target_options(view: GameView, card: CardDefinition) -> tuple[tuple[st
             for item in view.player.graveyard
             if "Creature" in item.card_type
         )
-    if card.base_id in {"unsummon", "giant_growth"}:
-        return tuple((item.instance_id, f"{item.name} — creature") for item in permanents
-                     if "Creature" in item.card_type)
-    if card.base_id == "counterspell":
+    if card.base_id == "gravedigger":
+        return tuple((item.instance_id, f"{item.name} — your graveyard")
+                     for item in view.player.graveyard if "Creature" in item.card_type)
+    if card.base_id == "naturalize":
+        return tuple((item.instance_id, f"{item.name} — permanent") for item in permanents
+                     if "Artifact" in item.card_type or "Enchantment" in item.card_type)
+    if card.base_id in {"counterspell", "cancel", "mana_leak"}:
         return tuple((item.stack_item_id, f"{item.source.name} — stack") for item in view.stack)
+    if card.base_id == "negate":
+        return tuple((item.stack_item_id, f"{item.source.name} — stack") for item in view.stack
+                     if "Creature" not in item.source.card_type)
     return ()
 
 

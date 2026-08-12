@@ -120,17 +120,18 @@ Both presentations subscribe to `ClientStateStore` and call `ClientController`; 
 - One land per turn, declared color-count payment, atomic server selection/tapping of mana sources, untap and temporary-effect cleanup
 - Server-granted request tokens, active/non-active priority transfer, timeout-as-pass enforcement, two-pass advancement, and LIFO stack resolution
 - Legal targets are checked when cast and again at resolution; invalidated spells fizzle
-- Attackers, blockers, multiple-blocker damage order, first strike/double-strike engine support, simultaneous damage, lethal state checks, and no trample carry-over
+- Attackers, blockers, multiple-blocker damage order, flying/reach, defender, vigilance, first strike/double strike, protection, trample carry-over, simultaneous damage, and lethal state checks
 - `LIFE_ZERO`, `DECK_EMPTY`, `CONCEDE`, and `DISCONNECT` game-over reasons
 - Mandatory Gray Merchant enter trigger on the stack
 
-The five required card effects are Lightning Bolt, Counterspell, Unsummon, Giant
-Growth, and Gray Merchant of Asphodel. The finished engine additionally supports
-Shock, Lava Spike, Rift Bolt, Ponder, Rampant Growth, Dark Ritual, Doom Blade,
-Terror, Mind Rot, and Raise Dead. All supplied lands provide mana; supplied
-creatures and permanents retain their listed base statistics and core combat
-keywords. Other instant, sorcery, triggered, or activated text is intentionally
-unavailable because complete card-effect coverage is bonus scope.
+The engine implements all 58 supplied card definitions. Coverage includes direct
+damage and prevention, life gain/loss, counterspells, bounce, discard, graveyard
+retrieval, destroy/exile effects, library search/mill/reorder, temporary modifiers,
+auras, suspend, madness, kicker, prowess, regeneration, mana abilities, tap
+abilities, enter/attack/target triggers, and the catalog's combat keywords.
+
+The `decks/` directory includes the original red, black, and blue fixtures plus
+focused 12-card green, white, and artifact decks for fast effect testing.
 
 ## Supplied card data and artwork
 
@@ -145,21 +146,21 @@ python -m compileall -q common server client tests scripts
 python -m unittest discover -s tests -v
 ```
 
-The suite covers framing, every PDU contract, catalog totals, hidden information, lifecycle and mulligans, priority/stack behavior, five effects, phases/combat, two-seat connections, GUI projections/actions/assets, Tk rendering, and real-loopback two-client behavior.
+The suite covers framing, every PDU contract, catalog totals, full spell registration,
+the supplied decks, hidden information, lifecycle and mulligans, priority/stack
+behavior, card-effect integrations, phases/combat, two-seat connections, GUI
+projections/actions/assets, Tk rendering, and real-loopback two-client behavior.
 
 ## Known limitations and RFC deviations
 
 The following limits are intentional and known at submission time:
 
-- Fifteen named effects are implemented, including all five required effects and
-  ten additional spells. Other rules text in the supplied catalog is unavailable;
-  complete card-effect coverage is bonus scope.
-- The schemas and terminal commands expose activated-ability and trigger-choice
-  PDUs, but the supported card subset does not implement a general interpreter for
-  arbitrary activated, optional, or simultaneous triggered abilities.
-- Bonus mechanics such as trample carry-over are not implemented. A blocked
-  attacker assigns damage to its blockers and does not deal excess damage to the
-  defending player.
+- Card behavior is implemented explicitly for the fixed 58-card teaching catalog;
+  this is not a general-purpose interpreter for arbitrary Magic rules text.
+- When an opponent-controlled optional payment or hidden-zone choice cannot be
+  represented by the current request protocol, the server applies a deterministic
+  legal default. For example, Mana Leak pays when three mana is available and Mind
+  Rot discards the last two cards unless explicit valid choices are supplied.
 - Authentication, TLS, spectators, matchmaking, persistence, and best-of-three
   matches are not provided. These are either explicitly outside MTGNP 1.0 or
   identified by the RFC as deployment concerns rather than required baseline work.

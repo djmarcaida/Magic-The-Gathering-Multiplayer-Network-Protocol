@@ -1161,6 +1161,10 @@ class GameApplication:
                 "play_land", (selected_hand[0].instance_id,)))
         if "cast_spell" in actions:
             add("Cast selected spell", lambda: self._cast(selected_hand[0]))
+        if "activate_ability" in actions:
+            selected_own = [card for card in view.player.battlefield
+                            if card.instance_id in self._selected]
+            add("Activate selected ability", lambda: self._activate(selected_own[0]))
         if "discard" in actions:
             add("Discard selected", lambda: self._send(
                 "discard", tuple(card.instance_id for card in selected_hand)))
@@ -1189,9 +1193,40 @@ class GameApplication:
         if self.current_view is None:
             return
         definition = self.catalog.card(card.instance_id)
+        choices: dict[str, object] = {}
+        if card.cast_from_madness:
+            choices["madness"] = True
+        if card.base_id in {"goblin_bushwhacker", "vines_of_vastwood"}:
+            choices["kicked"] = messagebox.askyesno(
+                "Optional cost", f"Pay the kicker cost for {card.name}?", parent=self.root)
+        if card.base_id == "rift_bolt":
+            choices["suspend"] = messagebox.askyesno(
+                "Suspend", "Suspend Rift Bolt for {R} instead of casting it now?",
+                parent=self.root)
+        if card.base_id == "healing_salve":
+            mode = self._choose_one("Choose mode", "Choose Healing Salve's mode:",
+                                    (("gain_life", "Gain 3 life"),
+                                     ("prevent", "Prevent the next 3 damage")))
+            if mode is None:
+                return
+            choices["mode"] = mode
+        if card.base_id == "ponder":
+            choices["shuffle"] = messagebox.askyesno(
+                "Ponder", "Shuffle your library before drawing?", parent=self.root)
+        if card.base_id == "path_to_exile":
+            choices["search"] = messagebox.askyesno(
+                "Path to Exile", "Allow the creature's controller to find a basic land?",
+                parent=self.root)
+
         options = legal_target_options(self.current_view, definition)
+        if card.base_id == "healing_salve" and choices.get("mode") == "gain_life":
+            options = tuple(option for option in options
+                            if option[0] in {self.current_view.player_id,
+                                             self.current_view.opponent_id})
         targets: list[str] = []
-        if card.base_id in TARGETED_SPELL_EFFECTS:
+        needs_target = (card.base_id in TARGETED_SPELL_EFFECTS
+                        and not (card.base_id == "rift_bolt" and choices.get("suspend")))
+        if needs_target:
             if not options:
                 self.status_var.set("This spell currently has no legal target.")
                 return
@@ -1199,12 +1234,70 @@ class GameApplication:
             if target is None:
                 return
             targets.append(target)
+        cost = dict(card.mana_cost)
+        if choices.get("suspend"):
+            cost = {"R": 1}
+        elif choices.get("madness"):
+            cost = {"R": 1, "generic": 2}
+        elif choices.get("kicked") and card.base_id == "goblin_bushwhacker":
+            cost["R"] = cost.get("R", 0) + 1
+            cost["generic"] = cost.get("generic", 0) + 1
+        elif choices.get("kicked") and card.base_id == "vines_of_vastwood":
+            cost["G"] = cost.get("G", 0) + 1
         mana = ", ".join(
             f"{'generic' if key == 'generic' else key}={amount}"
-            for key, amount in card.mana_cost.items()
+            for key, amount in cost.items()
         )
         self._send("cast_spell", (card.instance_id,),
-                   {"targets": ",".join(targets), "mana": mana})
+                   {"targets": ",".join(targets), "mana": mana, "choices": choices})
+
+    def _activate(self, card: CardView) -> None:
+        if self.current_view is None:
+            return
+        view = self.current_view
+        permanents = (*view.player.battlefield, *view.opponent.battlefield)
+        targets: list[str] = []
+        payment: dict[str, object] = {}
+        options: tuple[tuple[str, str], ...] = ()
+        if card.base_id in {"prodigal_sorcerer", "rod_of_ruin"}:
+            options = ((view.opponent_id, f"{view.opponent_id} — opponent"),
+                       (view.player_id, f"{view.player_id} — you"),
+                       *((item.instance_id, f"{item.name} — creature")
+                         for item in permanents if "Creature" in item.card_type))
+        elif card.base_id == "royal_assassin":
+            options = tuple((item.instance_id, item.name) for item in permanents
+                            if "Creature" in item.card_type and item.tapped)
+        elif card.base_id == "millstone":
+            options = ((view.opponent_id, f"{view.opponent_id} — opponent"),
+                       (view.player_id, f"{view.player_id} — you"))
+        elif card.base_id == "mother_of_runes":
+            options = tuple((item.instance_id, item.name) for item in view.player.battlefield
+                            if "Creature" in item.card_type)
+            color = self._choose_one("Choose color", "Choose a protection color:",
+                                     (("W", "White"), ("U", "Blue"), ("B", "Black"),
+                                      ("R", "Red"), ("G", "Green")))
+            if color is None:
+                return
+            payment["color"] = color
+        elif card.base_id == "merfolk_looter" and view.hand:
+            discard_id = self._choose_one(
+                "Choose discard", "Choose the card to discard after drawing:",
+                tuple((item.instance_id, item.name) for item in view.hand))
+            if discard_id is None:
+                return
+            payment["discard_id"] = discard_id
+        if options:
+            target = self._choose_one("Choose target", "Choose the ability target:", options)
+            if target is None:
+                return
+            targets.append(target)
+        costs = {"millstone": {"X": 2}, "rod_of_ruin": {"X": 3},
+                 "troll_ascetic": {"G": 1, "X": 1}}
+        payment["mana"] = costs.get(card.base_id, {})
+        self._send("activate_ability", (card.instance_id,), {
+            "ability_index": 0, "targets": ",".join(targets),
+            "cost_payment": payment,
+        })
 
     def _declare_blockers(self) -> None:
         if self.current_view is None:

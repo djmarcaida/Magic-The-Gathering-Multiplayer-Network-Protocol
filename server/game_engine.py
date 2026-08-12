@@ -13,6 +13,21 @@ from server.game_state import GameState, Lifecycle, Phase, PermanentState, Stack
 from server.priority_stack import PriorityError, PriorityOutcome, PriorityStack
 
 
+INSTANT_SORCERY_EFFECTS = {
+    "lightning_bolt", "shock", "lava_spike", "flame_slash", "searing_spear",
+    "skullcrack", "rift_bolt", "incinerate", "counterspell", "cancel",
+    "unsummon", "ponder", "negate", "mana_leak", "giant_growth",
+    "rampant_growth", "naturalize", "vines_of_vastwood", "swords_to_plowshares",
+    "path_to_exile", "healing_salve", "dark_ritual", "terror", "doom_blade",
+    "raise_dead", "mind_rot",
+}
+
+MANA_ABILITIES = {
+    "sol_ring": ("C", 2), "llanowar_elves": ("G", 1),
+    "elvish_mystic": ("G", 1),
+}
+
+
 @dataclass(frozen=True)
 class Outbound:
     recipient: str | None
@@ -362,32 +377,41 @@ class GameEngine:
         self._require_token(seat, pdu)
         player = self.state.players[player_id]
         card_id = pdu["card_id"]
-        if card_id not in player.hand:
+        choices = pdu.get("choices", {})
+        if not isinstance(choices, dict):
+            raise ActionError("ILLEGAL_ACTION", "choices must be an object")
+        from_madness = bool(choices.get("madness"))
+        if card_id not in player.hand and not (from_madness and card_id in player.madness_cards):
             raise ActionError("ILLEGAL_ACTION", "spell is not in your hand")
         card = self.catalog.get(card_id)
         if card.card_type == "Land":
             raise ActionError("ILLEGAL_ACTION", "lands are played, not cast")
-        if card.card_type != "Instant" and (
+        if card.card_type != "Instant" and not from_madness and (
                 player_id != self.state.active_player
                 or self.state.phase not in {Phase.PRECOMBAT_MAIN, Phase.POSTCOMBAT_MAIN}
                 or self.state.stack):
             raise ActionError("WRONG_PHASE", "non-instant spells require your empty-stack main phase")
-        supported_effects = {
-            "lightning_bolt", "shock", "lava_spike", "counterspell", "unsummon",
-            "giant_growth", "rift_bolt", "ponder", "rampant_growth", "dark_ritual",
-            "doom_blade", "terror", "mind_rot", "raise_dead",
-        }
-        if card.card_type in {"Instant", "Sorcery"} and card.base_id not in supported_effects:
-            raise ActionError("ILLEGAL_ACTION", "this baseline does not implement that spell effect")
+        if card.card_type in {"Instant", "Sorcery"} and card.base_id not in INSTANT_SORCERY_EFFECTS:
+            raise ActionError("ILLEGAL_ACTION", "this card effect is not registered")
         targets = pdu["targets"]
         if not isinstance(targets, list):
             raise ActionError("ILLEGAL_TARGET", "targets must be a list")
-        self._validate_spell_targets(card.base_id, targets, player_id)
+        if not (card.base_id == "rift_bolt" and choices.get("suspend")):
+            self._validate_spell_targets(card.base_id, targets, player_id)
         sources = pdu["mana_payment"]
         if not isinstance(sources, dict):
             raise ActionError("INSUFFICIENT_MANA", "mana_payment must be a color-count object")
-        permanents, pool_spent = self._validate_mana_payment(
-            player_id, sources, dict(card.mana_cost))
+        cost = dict(card.mana_cost)
+        if card.base_id == "rift_bolt" and choices.get("suspend"):
+            cost = {"R": 1}
+        elif card.base_id == "reckless_wurm" and from_madness:
+            cost = {"R": 1, "generic": 2}
+        elif card.base_id == "goblin_bushwhacker" and choices.get("kicked"):
+            cost["R"] = cost.get("R", 0) + 1
+            cost["generic"] = cost.get("generic", 0) + 1
+        elif card.base_id == "vines_of_vastwood" and choices.get("kicked"):
+            cost["G"] = cost.get("G", 0) + 1
+        permanents, pool_spent = self._validate_mana_payment(player_id, sources, cost)
         self.priority.act(player_id, pdu["seq_num"])
         for color, amount in pool_spent.items():
             player.mana_pool[color] -= amount
@@ -395,15 +419,35 @@ class GameEngine:
                 del player.mana_pool[color]
         for permanent in permanents:
             permanent.tapped = True
-        player.hand.remove(card_id)
+        if card_id in player.hand:
+            player.hand.remove(card_id)
+        else:
+            player.madness_cards.remove(card_id)
+            if card_id in player.exile:
+                player.exile.remove(card_id)
+        if card.base_id == "rift_bolt" and choices.get("suspend"):
+            player.exile.append(card_id)
+            player.suspended[card_id] = 1
+            return [*self.snapshot_updates(), *self._grant_priority(player_id)]
         item = StackItem(f"stk_{self._stack_counter}", "SPELL", card_id, player_id,
-                         list(targets))
+                         list(targets), metadata={"choices": dict(choices)})
         self._stack_counter += 1
         self.priority.push(item)
+        if card.card_type not in {"Creature", "Artifact Creature"}:
+            for permanent in player.battlefield:
+                if self.catalog.get(permanent.card_id).base_id == "monastery_swiftspear":
+                    permanent.power_modifier += 1
+                    permanent.toughness_modifier += 1
+        phantasmal_triggers = self._push_phantasmal_triggers(targets)
         outgoing = [Outbound(None, self._pdu("STACK_PUSH", stack_item_id=item.stack_item_id,
                                               item_type=item.item_type, source=item.source,
-                                              targets=item.targets, controller=item.controller)),
-                    *self._grant_priority(player_id)]
+                                              targets=item.targets, controller=item.controller))]
+        outgoing.extend(Outbound(None, self._pdu(
+            "STACK_PUSH", stack_item_id=trigger.stack_item_id,
+            item_type=trigger.item_type, source=trigger.source,
+            targets=trigger.targets, controller=trigger.controller))
+                        for trigger in phantasmal_triggers)
+        outgoing.extend(self._grant_priority(player_id))
         return outgoing
 
     def _handle_attackers(self, seat: str, pdu: dict[str, object]) -> list[Outbound]:
@@ -433,16 +477,22 @@ class GameEngine:
         for card_id in attackers:
             permanent = self.state.permanent(card_id)
             card = self.catalog.get(card_id)
+            keywords = set(card.keywords) | set(permanent.temporary_keywords if permanent else ())
             if (permanent is None or permanent.controller != player_id
                     or "Creature" not in card.card_type or permanent.tapped
-                    or (permanent.summoning_sick and "Haste" not in card.keywords)
-                    or "Defender" in card.keywords):
+                    or (permanent.summoning_sick and "Haste" not in keywords)
+                    or "Defender" in keywords or self._is_pacified(card_id)):
                 raise ActionError("ILLEGAL_ACTION", f"illegal attacker: {card_id}")
             selected.append(permanent)
         self.state.combat.attackers = list(attackers)
         for permanent in selected:
             if "Vigilance" not in self.catalog.get(permanent.card_id).keywords:
                 permanent.tapped = True
+            if self.catalog.get(permanent.card_id).base_id == "goblin_guide":
+                defending_player = self.state.players[defender]
+                if (defending_player.library
+                        and self.catalog.get(defending_player.library[-1]).card_type == "Land"):
+                    defending_player.hand.append(defending_player.library.pop())
         if not attackers:
             return self._enter_priority_phase(Phase.END_OF_COMBAT)
         return self._grant_priority(player_id, open_window=True)
@@ -479,10 +529,15 @@ class GameEngine:
                 permanent = self.state.permanent(card_id)
                 card = self.catalog.get(card_id)
                 attacker_card = self.catalog.get(attacker)
+                attacker_permanent = self.state.permanent(attacker)
+                attacker_keywords = set(attacker_card.keywords) | set(
+                    attacker_permanent.temporary_keywords if attacker_permanent else ())
+                blocker_keywords = set(card.keywords) | set(permanent.temporary_keywords if permanent else ())
                 if (card_id in used or permanent is None or permanent.controller != player_id
-                        or permanent.tapped or "Creature" not in card.card_type):
+                        or permanent.tapped or "Creature" not in card.card_type
+                        or self._is_pacified(card_id)):
                     raise ActionError("ILLEGAL_ACTION", f"illegal blocker: {card_id}")
-                if "Flying" in attacker_card.keywords and "Flying" not in card.keywords:
+                if "Flying" in attacker_keywords and not ({"Flying", "Reach"} & blocker_keywords):
                     raise ActionError("ILLEGAL_ACTION", f"creature cannot block a flying attacker: {card_id}")
                 if self._has_protection_from(self.state.permanent(attacker), card):
                     raise ActionError("ILLEGAL_ACTION", "protection prevents this block")
@@ -526,7 +581,7 @@ class GameEngine:
             raise ActionError("ILLEGAL_ACTION", f"must discard between 1 and {needed} cards from hand")
         for card_id in cards:
             player.hand.remove(card_id)
-            player.graveyard.append(card_id)
+            self._discard_card(player, card_id)
         outgoing = self.snapshot_updates()
         if len(player.hand) > 7:
             update = next(x for x in outgoing if x.recipient == seat)
@@ -536,10 +591,121 @@ class GameEngine:
         return outgoing
 
     def _handle_activate_ability(self, seat: str, pdu: dict[str, object]) -> list[Outbound]:
+        assert self.state is not None and self.priority is not None
         player_id = self.player_for_seat(seat)
         if self.state.priority_holder != player_id:
             raise ActionError("NOT_YOUR_PRIORITY", "player does not hold priority")
-        raise ActionError("ILLEGAL_ACTION", "this baseline does not implement this PDU type")
+        self._require_token(seat, pdu)
+        source_id = pdu["source_id"]
+        permanent = self.state.permanent(source_id)
+        if permanent is None or permanent.controller != player_id:
+            raise ActionError("ILLEGAL_ACTION", "ability source is not controlled by player")
+        if pdu["ability_index"] != 0:
+            raise ActionError("ILLEGAL_ACTION", "ability_index is not supported for this source")
+        base = self.catalog.get(source_id).base_id
+        targets = pdu["targets"]
+        payment = pdu["cost_payment"]
+        if not isinstance(targets, list) or not isinstance(payment, (dict, list)):
+            raise ActionError("ILLEGAL_ACTION", "invalid activated ability fields")
+        if permanent.tapped:
+            raise ActionError("ILLEGAL_ACTION", "ability source is already tapped")
+        if (base != "troll_ascetic"
+                and "Creature" in self.catalog.get(source_id).card_type
+                and permanent.summoning_sick):
+            raise ActionError("ILLEGAL_ACTION", "summoning sickness prevents a tap ability")
+
+        if base in MANA_ABILITIES:
+            color, amount = MANA_ABILITIES[base]
+            if targets:
+                raise ActionError("ILLEGAL_TARGET", "mana ability has no target")
+            permanent.tapped = True
+            self.priority.act(player_id, pdu["seq_num"])
+            player = self.state.players[player_id]
+            player.mana_pool[color] = player.mana_pool.get(color, 0) + amount
+            return self._grant_priority(player_id)
+
+        ability_costs = {
+            "merfolk_looter": {}, "prodigal_sorcerer": {}, "mother_of_runes": {},
+            "royal_assassin": {}, "millstone": {"generic": 2},
+            "rod_of_ruin": {"generic": 3}, "troll_ascetic": {"G": 1, "generic": 1},
+        }
+        if base not in ability_costs:
+            raise ActionError("ILLEGAL_ACTION", "source has no implemented activated ability")
+        cost = ability_costs[base]
+        mana = payment.get("mana", {}) if isinstance(payment, dict) else {}
+        if not isinstance(mana, dict):
+            raise ActionError("INSUFFICIENT_MANA", "ability mana payment must be an object")
+        sources, pool_spent = self._validate_mana_payment(player_id, mana, cost)
+        self._validate_ability_targets(base, targets, player_id)
+        self.priority.act(player_id, pdu["seq_num"])
+        if base != "troll_ascetic":
+            permanent.tapped = True
+        for color, amount in pool_spent.items():
+            self.state.players[player_id].mana_pool[color] -= amount
+        for source in sources:
+            source.tapped = True
+        item = StackItem(f"stk_{self._stack_counter}", "ABILITY", source_id,
+                         player_id, list(targets), metadata={
+                             "color": payment.get("color") if isinstance(payment, dict) else None,
+                             "discard_id": (payment.get("discard_id")
+                                            if isinstance(payment, dict) else None)})
+        self._stack_counter += 1
+        self.priority.push(item)
+        phantasmal_triggers = self._push_phantasmal_triggers(targets)
+        outgoing = [Outbound(None, self._pdu(
+            "STACK_PUSH", stack_item_id=item.stack_item_id, item_type=item.item_type,
+            source=item.source, targets=item.targets, controller=item.controller))]
+        outgoing.extend(Outbound(None, self._pdu(
+            "STACK_PUSH", stack_item_id=trigger.stack_item_id,
+            item_type=trigger.item_type, source=trigger.source,
+            targets=trigger.targets, controller=trigger.controller))
+                        for trigger in phantasmal_triggers)
+        outgoing.extend(self._grant_priority(player_id))
+        return outgoing
+
+    def _validate_ability_targets(self, base: str, targets: list[str], controller: str) -> None:
+        assert self.state is not None
+        source = self.catalog.definitions[base]
+        if base in {"prodigal_sorcerer", "rod_of_ruin"}:
+            target = targets[0] if len(targets) == 1 else None
+            permanent = self.state.permanent(target) if target else None
+            if target not in self.state.players and (
+                    permanent is None or "Creature" not in self.catalog.get(target).card_type):
+                raise ActionError("ILLEGAL_TARGET", "ability requires a player or creature target")
+            if permanent is not None and not self._can_target(permanent, source, controller):
+                raise ActionError("ILLEGAL_TARGET", "creature cannot be targeted by this ability")
+        elif base == "royal_assassin":
+            permanent = self.state.permanent(targets[0]) if len(targets) == 1 else None
+            if permanent is None or not permanent.tapped or "Creature" not in self.catalog.get(targets[0]).card_type:
+                raise ActionError("ILLEGAL_TARGET", "Royal Assassin requires a tapped creature")
+            if not self._can_target(permanent, source, controller):
+                raise ActionError("ILLEGAL_TARGET", "creature cannot be targeted by this ability")
+        elif base == "millstone":
+            if len(targets) != 1 or targets[0] not in self.state.players:
+                raise ActionError("ILLEGAL_TARGET", "Millstone requires a player target")
+        elif base == "mother_of_runes":
+            permanent = self.state.permanent(targets[0]) if len(targets) == 1 else None
+            if permanent is None or permanent.controller != controller or "Creature" not in self.catalog.get(targets[0]).card_type:
+                raise ActionError("ILLEGAL_TARGET", "Mother of Runes requires your creature")
+            if not self._can_target(permanent, source, controller):
+                raise ActionError("ILLEGAL_TARGET", "creature cannot be targeted by this ability")
+        elif base in {"merfolk_looter", "troll_ascetic"} and targets:
+            raise ActionError("ILLEGAL_TARGET", "ability has no target")
+
+    def _push_phantasmal_triggers(self, targets: list[str]) -> list[StackItem]:
+        assert self.state is not None and self.priority is not None
+        triggers: list[StackItem] = []
+        for target_id in targets:
+            target = self.state.permanent(target_id)
+            if target is None or self.catalog.get(target_id).base_id != "phantasmal_bear":
+                continue
+            trigger = StackItem(f"stk_{self._stack_counter}", "TRIGGER_ABILITY",
+                                target.card_id, target.controller, [],
+                                metadata={"effect": "phantasmal_sacrifice"})
+            self._stack_counter += 1
+            self.priority.push(trigger)
+            triggers.append(trigger)
+        return triggers
 
     def _resolve_top(self) -> list[Outbound]:
         """
@@ -556,38 +722,62 @@ class GameEngine:
         result = "RESOLVED"
         changes: list[dict[str, object]] = []
         trigger_pushed: StackItem | None = None
-        if item.item_type == "TRIGGER_ABILITY" and base == "gray_merchant":
+        effect = item.metadata.get("effect")
+        choices = item.metadata.get("choices", {})
+        if item.item_type == "TRIGGER_ABILITY" and effect == "phantasmal_sacrifice":
+            permanent = self.state.permanent(item.source)
+            if permanent is not None:
+                self._sacrifice(permanent)
+                changes.append({"change_type": "SACRIFICED", "card_id": item.source})
+        elif item.item_type == "TRIGGER_ABILITY" and effect == "goblin_guide":
+            defender = self.state.opponent_of(item.controller)
+            library = self.state.players[defender].library
+            if library and self.catalog.get(library[-1]).card_type == "Land":
+                card_id = library.pop()
+                self.state.players[defender].hand.append(card_id)
+                changes.append({"change_type": "REVEALED_TO_HAND", "card_id": card_id})
+        elif item.item_type == "TRIGGER_ABILITY" and base == "gray_merchant":
             devotion = sum(self.catalog.get(p.card_id).mana_cost.get("B", 0)
                            for p in self.state.players[item.controller].battlefield)
             if devotion > 0:
                 self.state.players[self.state.opponent_of(item.controller)].life -= devotion
-                self.state.players[item.controller].life += devotion
+                self._gain_life(item.controller, devotion)
                 changes.append({"change_type": "GRAY_MERCHANT", "amount": devotion})
+        elif item.item_type == "ABILITY":
+            result, changes = self._resolve_ability(item)
         elif not self._targets_still_legal(base, item.targets, item.controller):
             result = "FIZZLE"
-        elif base in {"lightning_bolt", "shock", "lava_spike", "rift_bolt"}:
+        elif base in {"lightning_bolt", "shock", "lava_spike", "flame_slash",
+                    "searing_spear", "skullcrack", "rift_bolt", "incinerate"}:
             target = item.targets[0]
-            amount = 2 if base == "shock" else 3
-            if target in self.state.players:
-                self.state.players[target].life -= amount
-            else:
-                self.state.permanent(target).damage += amount
-            changes.append({"change_type": "DAMAGE", "target": target, "amount": amount})
+            amount = {"shock": 2, "flame_slash": 4}.get(base, 3)
+            if base == "skullcrack":
+                self.state.life_gain_locked = True
+                self.state.damage_prevention_locked = True
+            dealt = self._deal_damage(target, amount)
+            if base == "incinerate" and target not in self.state.players:
+                permanent = self.state.permanent(target)
+                if permanent is not None:
+                    permanent.cant_regenerate = True
+            changes.append({"change_type": "DAMAGE", "target": target, "amount": dealt})
         elif base == "dark_ritual":
             player = self.state.players[item.controller]
             player.mana_pool["B"] = player.mana_pool.get("B", 0) + 3
             changes.append({"change_type": "MANA_ADDED", "player": item.controller,
                             "color": "B", "amount": 3})
-        elif base in {"doom_blade", "terror"}:
+        elif base in {"doom_blade", "terror", "naturalize"}:
             permanent = self.state.permanent(item.targets[0])
-            self.state.players[permanent.controller].battlefield.remove(permanent)
-            self.state.players[permanent.owner].graveyard.append(permanent.card_id)
-            changes.append({"change_type": "DESTROYED", "card_id": permanent.card_id})
+            destroyed = self._destroy(permanent, cannot_regenerate=base == "terror")
+            changes.append({"change_type": "DESTROYED" if destroyed else "REGENERATED",
+                            "card_id": permanent.card_id})
         elif base == "mind_rot":
             target = self.state.players[item.targets[0]]
-            discarded = target.hand[-2:]
-            del target.hand[len(target.hand) - len(discarded):]
-            target.graveyard.extend(discarded)
+            requested = choices.get("discard_ids", []) if isinstance(choices, dict) else []
+            discarded = ([cid for cid in requested if cid in target.hand][:2]
+                         if requested else target.hand[-2:])
+            for card_id in discarded:
+                target.hand.remove(card_id)
+                self._discard_card(target, card_id)
             changes.extend({"change_type": "DISCARDED", "player": target.player_id,
                             "card_id": card_id} for card_id in discarded)
         elif base == "raise_dead":
@@ -598,6 +788,13 @@ class GameEngine:
             changes.append({"change_type": "RETURNED_TO_HAND", "card_id": card_id})
         elif base == "ponder":
             player = self.state.players[item.controller]
+            top = player.library[-3:]
+            order = choices.get("order", []) if isinstance(choices, dict) else []
+            if len(order) == len(top) and set(order) == set(top):
+                del player.library[-len(top):]
+                player.library.extend(order)
+            if choices.get("shuffle"):
+                self.rng.shuffle(player.library)
             if player.library:
                 player.hand.append(player.library.pop())
             changes.append({"change_type": "CARD_DRAWN", "player": item.controller})
@@ -609,11 +806,13 @@ class GameEngine:
                 changes.append({"change_type": "ENTERED_BATTLEFIELD", "card_id": land_id, "tapped": True})
             else:
                 result = "FIZZLE"
-        elif base == "counterspell":
+        elif base in {"counterspell", "cancel", "negate", "mana_leak"}:
             target_id = item.targets[0]
             target = next((x for x in self.state.stack if x.stack_item_id == target_id), None)
             if target is None:
                 result = "FIZZLE"
+            elif base == "mana_leak" and self._pay_generic_if_available(target.controller, 3):
+                changes.append({"change_type": "MANA_LEAK_PAID", "player": target.controller})
             else:
                 self.state.stack = [i for i in self.state.stack if i.stack_item_id != target_id]
                 self.state.players[target.controller].graveyard.append(target.source)
@@ -622,22 +821,67 @@ class GameEngine:
             permanent = self.state.permanent(item.targets[0])
             self.state.players[permanent.controller].battlefield.remove(permanent)
             self.state.players[permanent.owner].hand.append(permanent.card_id)
+            self._remove_attached_to(permanent.card_id)
             changes.append({"change_type": "RETURNED_TO_HAND", "card_id": permanent.card_id})
-        elif base == "giant_growth":
+        elif base in {"giant_growth", "vines_of_vastwood"}:
             permanent = self.state.permanent(item.targets[0])
-            permanent.power_modifier += 3
-            permanent.toughness_modifier += 3
+            amount = 4 if base == "vines_of_vastwood" and choices.get("kicked") else 3
+            if base == "vines_of_vastwood":
+                permanent.opponent_hexproof = True
+                if not choices.get("kicked"):
+                    amount = 0
+            permanent.power_modifier += amount
+            permanent.toughness_modifier += amount
             changes.append({"change_type": "MODIFIED", "card_id": permanent.card_id,
-                            "power": 3, "toughness": 3})
+                            "power": amount, "toughness": amount})
+        elif base in {"swords_to_plowshares", "path_to_exile"}:
+            permanent = self.state.permanent(item.targets[0])
+            affected_controller = permanent.controller
+            power = max(0, (self.catalog.get(permanent.card_id).power or 0)
+                        + permanent.power_modifier)
+            self._exile(permanent)
+            if base == "swords_to_plowshares":
+                self._gain_life(affected_controller, power)
+            elif choices.get("search", True):
+                land_id = self._fetch_basic_land(affected_controller)
+                if land_id:
+                    self.state.players[affected_controller].battlefield.append(
+                        PermanentState(land_id, affected_controller, affected_controller, tapped=True,
+                                       summoning_sick=False))
+            changes.append({"change_type": "EXILED", "card_id": permanent.card_id})
+        elif base == "healing_salve":
+            target = item.targets[0]
+            mode = choices.get("mode", "gain_life")
+            if mode == "prevent":
+                if target in self.state.players:
+                    self.state.players[target].damage_prevention += 3
+                else:
+                    self.state.permanent(target).damage_prevention += 3
+            elif target in self.state.players:
+                self._gain_life(target, 3)
+            else:
+                result = "FIZZLE"
         elif "Creature" in card.card_type or card.card_type in {"Artifact", "Enchantment"}:
-            self.state.players[item.controller].battlefield.append(
-                PermanentState(item.source, item.controller, item.controller, tapped=False))
+            permanent = PermanentState(item.source, item.controller, item.controller, tapped=False)
+            if base == "pacifism":
+                permanent.attached_to = item.targets[0]
+            self.state.players[item.controller].battlefield.append(permanent)
             changes.append({"change_type": "ENTERED_BATTLEFIELD", "card_id": item.source})
             if base == "gray_merchant":
                 trigger_pushed = StackItem(f"stk_{self._stack_counter}", "TRIGGER_ABILITY",
                                            item.source, item.controller, [])
                 self._stack_counter += 1
                 self.priority.push(trigger_pushed)
+            elif base == "gravedigger" and item.targets:
+                graveyard = self.state.players[item.controller].graveyard
+                if item.targets[0] in graveyard:
+                    graveyard.remove(item.targets[0])
+                    self.state.players[item.controller].hand.append(item.targets[0])
+            elif base == "goblin_bushwhacker" and choices.get("kicked"):
+                for controlled in self.state.players[item.controller].battlefield:
+                    if "Creature" in self.catalog.get(controlled.card_id).card_type:
+                        controlled.power_modifier += 1
+                        controlled.temporary_keywords.append("Haste")
         if item.item_type == "SPELL" and card.card_type in {"Instant", "Sorcery"}:
             self.state.players[item.controller].graveyard.append(item.source)
         dead = self._state_based_actions()
@@ -663,57 +907,249 @@ class GameEngine:
             outgoing.extend(self.snapshot_updates())
         return outgoing
 
+    def _resolve_ability(self, item: StackItem) -> tuple[str, list[dict[str, object]]]:
+        assert self.state is not None
+        base = self.catalog.get(item.source).base_id
+        changes: list[dict[str, object]] = []
+        if base == "merfolk_looter":
+            player = self.state.players[item.controller]
+            if player.library:
+                player.hand.append(player.library.pop())
+            discard_id = item.metadata.get("discard_id")
+            if discard_id not in player.hand:
+                discard_id = player.hand[-1] if player.hand else None
+            if discard_id:
+                player.hand.remove(discard_id)
+                self._discard_card(player, discard_id)
+            changes.append({"change_type": "LOOTED", "player": item.controller})
+        elif base in {"prodigal_sorcerer", "rod_of_ruin"}:
+            dealt = self._deal_damage(item.targets[0], 1)
+            changes.append({"change_type": "DAMAGE", "target": item.targets[0],
+                            "amount": dealt})
+        elif base == "royal_assassin":
+            permanent = self.state.permanent(item.targets[0])
+            if permanent is None or not permanent.tapped:
+                return "FIZZLE", []
+            self._destroy(permanent)
+            changes.append({"change_type": "DESTROYED", "card_id": permanent.card_id})
+        elif base == "millstone":
+            player = self.state.players[item.targets[0]]
+            milled = [player.library.pop() for _ in range(min(2, len(player.library)))]
+            player.graveyard.extend(milled)
+            changes.extend({"change_type": "MILLED", "card_id": card_id}
+                           for card_id in milled)
+        elif base == "mother_of_runes":
+            permanent = self.state.permanent(item.targets[0])
+            if permanent is None:
+                return "FIZZLE", []
+            color = str(item.metadata.get("color", "W")).upper()
+            if color not in {"W", "U", "B", "R", "G"}:
+                color = "W"
+            permanent.protection_colors.append(color)
+            for player in self.state.players.values():
+                for attachment in list(player.battlefield):
+                    if (attachment.attached_to == permanent.card_id
+                            and color in self.catalog.get(attachment.card_id).colors):
+                        player.battlefield.remove(attachment)
+                        self.state.players[attachment.owner].graveyard.append(attachment.card_id)
+            changes.append({"change_type": "PROTECTION", "card_id": permanent.card_id,
+                            "color": color})
+        elif base == "troll_ascetic":
+            permanent = self.state.permanent(item.source)
+            if permanent is None:
+                return "FIZZLE", []
+            permanent.regeneration_shields += 1
+            changes.append({"change_type": "REGENERATION_SHIELD", "card_id": item.source})
+        return "RESOLVED", changes
+
+    def _deal_damage(self, target: str, amount: int) -> int:
+        assert self.state is not None
+        if target in self.state.players:
+            player = self.state.players[target]
+            prevented = 0 if self.state.damage_prevention_locked else min(amount, player.damage_prevention)
+            player.damage_prevention -= prevented
+            dealt = amount - prevented
+            player.life -= dealt
+            return dealt
+        permanent = self.state.permanent(target)
+        if permanent is None:
+            return 0
+        if self.state.damage_prevention_locked:
+            prevented = 0
+        else:
+            prevented = min(amount, permanent.damage_prevention)
+            permanent.damage_prevention -= prevented
+        dealt = amount - prevented
+        permanent.damage += dealt
+        return dealt
+
+    def _discard_card(self, player: object, card_id: str) -> None:
+        if self.catalog.get(card_id).base_id == "reckless_wurm":
+            player.exile.append(card_id)
+            player.madness_cards.append(card_id)
+        else:
+            player.graveyard.append(card_id)
+
+    def _gain_life(self, player_id: str, amount: int) -> int:
+        assert self.state is not None
+        if self.state.life_gain_locked:
+            return 0
+        self.state.players[player_id].life += amount
+        return amount
+
+    def _sacrifice(self, permanent: PermanentState) -> None:
+        assert self.state is not None
+        self.state.players[permanent.controller].battlefield.remove(permanent)
+        self.state.players[permanent.owner].graveyard.append(permanent.card_id)
+        self._remove_attached_to(permanent.card_id)
+
+    def _destroy(self, permanent: PermanentState, *, cannot_regenerate: bool = False) -> bool:
+        if (permanent.regeneration_shields > 0 and not cannot_regenerate
+                and not permanent.cant_regenerate):
+            permanent.regeneration_shields -= 1
+            permanent.tapped = True
+            permanent.damage = 0
+            return False
+        self._sacrifice(permanent)
+        return True
+
+    def _exile(self, permanent: PermanentState) -> None:
+        assert self.state is not None
+        self.state.players[permanent.controller].battlefield.remove(permanent)
+        self.state.players[permanent.owner].exile.append(permanent.card_id)
+        self._remove_attached_to(permanent.card_id)
+
+    def _remove_attached_to(self, card_id: str) -> None:
+        assert self.state is not None
+        for player in self.state.players.values():
+            for permanent in list(player.battlefield):
+                if permanent.attached_to == card_id:
+                    player.battlefield.remove(permanent)
+                    self.state.players[permanent.owner].graveyard.append(permanent.card_id)
+
+    def _is_pacified(self, card_id: str) -> bool:
+        assert self.state is not None
+        return any(self.catalog.get(permanent.card_id).base_id == "pacifism"
+                   and permanent.attached_to == card_id
+                   for player in self.state.players.values()
+                   for permanent in player.battlefield)
+
+    def _fetch_basic_land(self, player_id: str) -> str | None:
+        assert self.state is not None
+        player = self.state.players[player_id]
+        index = next((i for i, card_id in enumerate(player.library)
+                      if self.catalog.get(card_id).base_id
+                      in {"mountain", "forest", "plains", "island", "swamp"}), None)
+        if index is None:
+            return None
+        card_id = player.library.pop(index)
+        self.rng.shuffle(player.library)
+        return card_id
+
+    def _pay_generic_if_available(self, player_id: str, amount: int) -> bool:
+        assert self.state is not None
+        player = self.state.players[player_id]
+        pool_total = sum(player.mana_pool.values())
+        sources = [permanent for permanent in player.battlefield
+                   if not permanent.tapped and self.catalog.get(permanent.card_id).base_id
+                   in {"mountain", "forest", "plains", "island", "swamp", "sol_ring",
+                       "llanowar_elves", "elvish_mystic"}
+                   and not ("Creature" in self.catalog.get(permanent.card_id).card_type
+                            and permanent.summoning_sick)]
+        source_total = sum(2 if self.catalog.get(p.card_id).base_id == "sol_ring" else 1
+                           for p in sources)
+        if pool_total + source_total < amount:
+            return False
+        remaining = amount
+        for color in list(player.mana_pool):
+            spent = min(remaining, player.mana_pool[color])
+            player.mana_pool[color] -= spent
+            remaining -= spent
+            if player.mana_pool[color] == 0:
+                del player.mana_pool[color]
+        for permanent in sources:
+            if remaining <= 0:
+                break
+            permanent.tapped = True
+            remaining -= 2 if self.catalog.get(permanent.card_id).base_id == "sol_ring" else 1
+        return True
+
     def _validate_spell_targets(self, base_id: str, targets: list[str],
                                 controller: str | None = None) -> None:
         assert self.state is not None
-        if base_id in {"lightning_bolt", "shock", "rift_bolt"}:
+        source = self.catalog.definitions[base_id]
+
+        def creature_target() -> PermanentState:
+            if len(targets) != 1:
+                raise ActionError("ILLEGAL_TARGET", "spell requires one creature target")
+            permanent = self.state.permanent(targets[0])
+            if permanent is None or "Creature" not in self.catalog.get(targets[0]).card_type:
+                raise ActionError("ILLEGAL_TARGET", "target is not a creature")
+            if not self._can_target(permanent, source, controller):
+                raise ActionError("ILLEGAL_TARGET", "creature cannot be targeted by this spell")
+            return permanent
+
+        if base_id in {"lightning_bolt", "shock", "searing_spear", "skullcrack",
+                       "rift_bolt", "incinerate", "healing_salve"}:
             target = targets[0] if len(targets) == 1 else None
-            permanent = self.state.permanent(target) if target is not None else None
-            if (target not in self.state.players
-                    and (permanent is None
-                         or "Creature" not in self.catalog.get(permanent.card_id).card_type)):
+            permanent = self.state.permanent(target) if target else None
+            if target not in self.state.players and (
+                    permanent is None or "Creature" not in self.catalog.get(target).card_type):
                 raise ActionError("ILLEGAL_TARGET", "spell requires a player or creature target")
-            if (permanent is not None
-                    and self._has_protection_from(permanent, self.catalog.definitions[base_id])):
-                raise ActionError("ILLEGAL_TARGET", "target has protection from this spell")
+            if permanent is not None and not self._can_target(permanent, source, controller):
+                raise ActionError("ILLEGAL_TARGET", "creature cannot be targeted by this spell")
         elif base_id == "lava_spike":
             if len(targets) != 1 or targets[0] not in self.state.players:
                 raise ActionError("ILLEGAL_TARGET", "Lava Spike requires a player target")
+        elif base_id == "flame_slash":
+            creature_target()
         elif base_id in {"doom_blade", "terror"}:
-            if len(targets) != 1:
-                raise ActionError("ILLEGAL_TARGET", "spell requires a creature target")
-            permanent = self.state.permanent(targets[0])
-            if permanent is None:
-                raise ActionError("ILLEGAL_TARGET", "target creature is not on the battlefield")
+            permanent = creature_target()
             card = self.catalog.get(permanent.card_id)
-            if "Creature" not in card.card_type or "B" in card.colors:
+            if "B" in card.colors:
                 raise ActionError("ILLEGAL_TARGET", "target must be a nonblack creature")
             if base_id == "terror" and "Artifact" in card.card_type:
                 raise ActionError("ILLEGAL_TARGET", "Terror cannot target an artifact creature")
-            if self._has_protection_from(permanent, self.catalog.definitions[base_id]):
-                raise ActionError("ILLEGAL_TARGET", "target has protection from this spell")
+        elif base_id == "naturalize":
+            permanent = self.state.permanent(targets[0]) if len(targets) == 1 else None
+            if permanent is None:
+                raise ActionError("ILLEGAL_TARGET", "Naturalize requires a permanent target")
+            card = self.catalog.get(permanent.card_id)
+            if "Artifact" not in card.card_type and "Enchantment" not in card.card_type:
+                raise ActionError("ILLEGAL_TARGET", "target must be an artifact or enchantment")
+            if not self._can_target(permanent, source, controller):
+                raise ActionError("ILLEGAL_TARGET", "permanent cannot be targeted")
         elif base_id == "mind_rot":
             if len(targets) != 1 or targets[0] not in self.state.players:
                 raise ActionError("ILLEGAL_TARGET", "Mind Rot requires a player target")
-        elif base_id == "raise_dead":
+        elif base_id in {"raise_dead", "gravedigger"}:
             if len(targets) != 1:
                 raise ActionError("ILLEGAL_TARGET", "Raise Dead requires a creature card target")
             graveyard = self.state.players[controller].graveyard if controller else []
             if targets[0] not in graveyard or "Creature" not in self.catalog.get(targets[0]).card_type:
                 raise ActionError("ILLEGAL_TARGET", "target must be a creature card in your graveyard")
-        elif base_id in {"unsummon", "giant_growth"}:
-            if len(targets) != 1 or self.state.permanent(targets[0]) is None:
-                raise ActionError("ILLEGAL_TARGET", "spell requires a creature target")
-            if "Creature" not in self.catalog.get(targets[0]).card_type:
-                raise ActionError("ILLEGAL_TARGET", "target is not a creature")
-            if self._has_protection_from(
-                    self.state.permanent(targets[0]), self.catalog.definitions[base_id]):
-                raise ActionError("ILLEGAL_TARGET", "target has protection from this spell")
-        elif base_id == "counterspell":
-            if len(targets) != 1 or not any(x.stack_item_id == targets[0] for x in self.state.stack):
-                raise ActionError("ILLEGAL_TARGET", "Counterspell requires a spell on the stack")
+        elif base_id in {"unsummon", "giant_growth", "vines_of_vastwood",
+                         "swords_to_plowshares", "path_to_exile", "pacifism"}:
+            creature_target()
+        elif base_id in {"counterspell", "cancel", "negate", "mana_leak"}:
+            target = next((x for x in self.state.stack
+                           if len(targets) == 1 and x.stack_item_id == targets[0]), None)
+            if target is None or target.item_type != "SPELL":
+                raise ActionError("ILLEGAL_TARGET", "counter spell requires a spell on the stack")
+            if base_id == "negate" and "Creature" in self.catalog.get(target.source).card_type:
+                raise ActionError("ILLEGAL_TARGET", "Negate requires a noncreature spell")
         elif targets:
             raise ActionError("ILLEGAL_TARGET", "this spell takes no target")
+
+    def _can_target(self, permanent: PermanentState, source: object,
+                    controller: str | None) -> bool:
+        if self._has_protection_from(permanent, source):
+            return False
+        if controller is not None and permanent.controller != controller:
+            card = self.catalog.get(permanent.card_id)
+            if "Hexproof" in card.keywords or permanent.opponent_hexproof:
+                return False
+        return True
 
     def _targets_still_legal(self, base_id: str, targets: list[str],
                              controller: str | None = None) -> bool:
@@ -747,6 +1183,9 @@ class GameEngine:
                         "forest": ("G", 1), "swamp": ("B", 1),
                         "plains": ("W", 1), "sol_ring": ("C", 2),
                         "llanowar_elves": ("G", 1), "elvish_mystic": ("G", 1)}.get(base)
+            if (produced and "Creature" in self.catalog.get(permanent.card_id).card_type
+                    and permanent.summoning_sick):
+                produced = None
             if produced:
                 pool[produced[0]].append((permanent, produced[1]))
         chosen: list[PermanentState] = []
@@ -792,7 +1231,8 @@ class GameEngine:
                        if keyword.startswith("Protection from ")}
         color_names = {"W": "white", "U": "blue", "B": "black",
                        "R": "red", "G": "green"}
-        return any(color_names.get(color) in protections for color in source_colors)
+        keyword_match = any(color_names.get(color) in protections for color in source_colors)
+        return keyword_match or bool(source_colors & set(permanent.protection_colors))
 
     def _state_based_actions(self) -> list[str]:
         assert self.state is not None
@@ -800,11 +1240,14 @@ class GameEngine:
         for player in self.state.players.values():
             for permanent in list(player.battlefield):
                 card = self.catalog.get(permanent.card_id)
-                if card.toughness is not None and (card.toughness + permanent.toughness_modifier <= 0
-                                                   or permanent.damage >= card.toughness + permanent.toughness_modifier):
-                    player.battlefield.remove(permanent)
-                    player.graveyard.append(permanent.card_id)
+                toughness = ((card.toughness or 0) + permanent.toughness_modifier
+                             if card.toughness is not None else None)
+                if toughness is not None and toughness <= 0:
+                    self._sacrifice(permanent)
                     dead.append(permanent.card_id)
+                elif toughness is not None and permanent.damage >= toughness:
+                    if self._destroy(permanent):
+                        dead.append(permanent.card_id)
         return dead
 
     def resolve_combat_damage(self, first_strike: bool) -> list[Outbound]:
@@ -825,8 +1268,8 @@ class GameEngine:
             blockers = [x for x in blockers if x is not None]
             if not assigned_blocker_ids and attacker_deals:
                 amount = attacker_card.power + attacker.power_modifier
-                self.state.players[defender].life -= amount
-                events.append({"source": attacker_id, "target": defender, "amount": amount})
+                dealt = self._deal_damage(defender, amount)
+                events.append({"source": attacker_id, "target": defender, "amount": dealt})
             elif assigned_blocker_ids:
                 order_ids = self.state.combat.damage_order.get(attacker_id,
                                                                 [x.card_id for x in blockers])
@@ -837,15 +1280,20 @@ class GameEngine:
                         if blocker is None or remaining <= 0:
                             continue
                         blocker_card = self.catalog.get(blocker_id)
-                        if self._has_protection_from(blocker, attacker_card):
-                            continue
                         lethal = max(0, blocker_card.toughness + blocker.toughness_modifier - blocker.damage)
                         amount = min(remaining, lethal)
-                        if blocker_id == order_ids[-1]:
+                        if (blocker_id == order_ids[-1]
+                                and "Trample" not in attacker_card.keywords):
                             amount = remaining
-                        blocker.damage += amount
-                        remaining -= amount
-                        events.append({"source": attacker_id, "target": blocker_id, "amount": amount})
+                        assigned = amount
+                        remaining -= assigned
+                        dealt = (0 if self._has_protection_from(blocker, attacker_card)
+                                 else self._deal_damage(blocker_id, assigned))
+                        events.append({"source": attacker_id, "target": blocker_id, "amount": dealt})
+                    if "Trample" in attacker_card.keywords and remaining > 0:
+                        remaining = self._deal_damage(defender, remaining)
+                        events.append({"source": attacker_id, "target": defender,
+                                       "amount": remaining})
                 for blocker in blockers:
                     blocker_card = self.catalog.get(blocker.card_id)
                     blocker_first = "First strike" in blocker_card.keywords
@@ -853,7 +1301,7 @@ class GameEngine:
                     if blocker_double or blocker_first == first_strike:
                         amount = blocker_card.power + blocker.power_modifier
                         if not self._has_protection_from(attacker, blocker_card):
-                            attacker.damage += amount
+                            amount = self._deal_damage(attacker_id, amount)
                             events.append({"source": blocker.card_id, "target": attacker_id,
                                            "amount": amount})
         dead = self._state_based_actions()
@@ -888,6 +1336,25 @@ class GameEngine:
         old = self.state.phase
         self._clear_priority()
         transition = self._transition(old, new)
+        suspended_pushes: list[Outbound] = []
+        if new == Phase.UPKEEP:
+            player = self.state.players[self.state.active_player]
+            for card_id in list(player.suspended):
+                player.suspended[card_id] -= 1
+                if player.suspended[card_id] <= 0:
+                    del player.suspended[card_id]
+                    if card_id in player.exile:
+                        player.exile.remove(card_id)
+                    item = StackItem(f"stk_{self._stack_counter}", "SPELL", card_id,
+                                     player.player_id,
+                                     [self.state.opponent_of(player.player_id)],
+                                     metadata={"choices": {"from_suspend": True}})
+                    self._stack_counter += 1
+                    self.priority.push(item)
+                    suspended_pushes.append(Outbound(None, self._pdu(
+                        "STACK_PUSH", stack_item_id=item.stack_item_id,
+                        item_type=item.item_type, source=item.source,
+                        targets=item.targets, controller=item.controller)))
         if new == Phase.DRAW:
             skip = self.state.turn == 1 and self.state.active_player == self.state.first_player
             if not skip:
@@ -898,7 +1365,8 @@ class GameEngine:
                 player.hand.append(player.library.pop())
                 return [transition, *self.snapshot_updates(),
                         *self._grant_priority(self.state.active_player, open_window=True)]
-        return [transition, *self._grant_priority(self.state.active_player, open_window=True)]
+        return [transition, *suspended_pushes,
+                *self._grant_priority(self.state.active_player, open_window=True)]
 
     def _enter_declaration_phase(self, new: Phase) -> list[Outbound]:
         assert self.state is not None
@@ -973,6 +1441,20 @@ class GameEngine:
                 permanent.damage = 0
                 permanent.power_modifier = 0
                 permanent.toughness_modifier = 0
+                permanent.temporary_keywords.clear()
+                permanent.protection_colors.clear()
+                permanent.regeneration_shields = 0
+                permanent.damage_prevention = 0
+                permanent.cant_regenerate = False
+                permanent.opponent_hexproof = False
+            player.damage_prevention = 0
+            for card_id in list(player.madness_cards):
+                player.madness_cards.remove(card_id)
+                if card_id in player.exile:
+                    player.exile.remove(card_id)
+                    player.graveyard.append(card_id)
+        self.state.life_gain_locked = False
+        self.state.damage_prevention_locked = False
         outgoing = [transition, *self.snapshot_updates()]
         active_seat = self.seat_for_player(self.state.active_player)
         if len(self.state.players[self.state.active_player].hand) > 7:
