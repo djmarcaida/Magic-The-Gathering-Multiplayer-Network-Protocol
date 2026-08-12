@@ -2,13 +2,23 @@
 
 A required-scope MTGNP v1.0 implementation in Python: one authoritative server, exactly two TCP clients, desktop and terminal controls, the supplied fixed card catalog, mulligans, turns, priority and stack handling, combat, reconnection, and game restart. Both clients reuse the same transport, state store, and controller layers.
 
-## Requirements
+## Build and setup
 
 - Python 3.12 or newer
 - Python's optional Tcl/Tk component for the desktop client
 - No third-party runtime packages
 
-Run commands from the repository root.
+No compilation or package installation is required. Clone or extract the repository,
+open PowerShell in the repository root, and verify the source before running it:
+
+```powershell
+python --version
+python -m compileall -q common server client scripts
+```
+
+The first command should report Python 3.12 or newer. To verify that the optional
+desktop GUI is available, run `python -m tkinter`; a small Tk window should open.
+The terminal client can still be used when Tcl/Tk is unavailable.
 
 ## Start the server and two desktop clients
 
@@ -19,6 +29,19 @@ python -m server.main --host 127.0.0.1 --port 4444
 python -m client.gui_main --host 127.0.0.1 --port 4444 --id player_1 --deck decks/red.json
 python -m client.gui_main --host 127.0.0.1 --port 4444 --id player_2 --deck decks/black.json
 ```
+
+For the required verbose demonstration, add `--verbose` (or `-v`) to all three
+commands:
+
+```powershell
+python -m server.main --host 127.0.0.1 --port 4444 --verbose
+python -m client.gui_main --host 127.0.0.1 --port 4444 --id player_1 --deck decks/red.json --verbose
+python -m client.gui_main --host 127.0.0.1 --port 4444 --id player_2 --deck decks/black.json --verbose
+```
+
+Verbose mode is disabled by default. When enabled at startup, each process prints
+every complete PDU it sends and receives as readable JSON with a clearly labelled
+`SEND` or `RECV` prefix. Restart without the flag to disable it.
 
 The connection options are optional for the GUI. Running `python -m client.gui_main` opens a form for the host, port, player ID, and deck file. Each client is a separate process, so the server still enforces exactly two simultaneous player connections.
 
@@ -40,7 +63,8 @@ python -m client.main --host 127.0.0.1 --port 4444 --id player_1 --deck decks/re
 python -m client.main --host 127.0.0.1 --port 4444 --id player_2 --deck decks/black.json
 ```
 
-Add `--verbose` to any process to print each complete JSON PDU. The server also accepts `--reconnect-timeout SECONDS`.
+The same `--verbose` or `-v` flag works on both terminal clients. The server also
+accepts `--reconnect-timeout SECONDS`.
 
 Run the bounded real-socket smoke demo with:
 
@@ -100,7 +124,13 @@ Both presentations subscribe to `ClientStateStore` and call `ClientController`; 
 - `LIFE_ZERO`, `DECK_EMPTY`, `CONCEDE`, and `DISCONNECT` game-over reasons
 - Mandatory Gray Merchant enter trigger on the stack
 
-The five required card effects are Lightning Bolt, Counterspell, Unsummon, Giant Growth, and Gray Merchant of Asphodel. All supplied lands provide mana; supplied creatures and permanents retain their listed base statistics and core combat keywords. Other instant, sorcery, triggered, or activated text is intentionally unavailable because complete card-effect coverage is bonus scope.
+The five required card effects are Lightning Bolt, Counterspell, Unsummon, Giant
+Growth, and Gray Merchant of Asphodel. The finished engine additionally supports
+Shock, Lava Spike, Rift Bolt, Ponder, Rampant Growth, Dark Ritual, Doom Blade,
+Terror, Mind Rot, and Raise Dead. All supplied lands provide mana; supplied
+creatures and permanents retain their listed base statistics and core combat
+keywords. Other instant, sorcery, triggered, or activated text is intentionally
+unavailable because complete card-effect coverage is bonus scope.
 
 ## Supplied card data and artwork
 
@@ -117,7 +147,28 @@ python -m unittest discover -s tests -v
 
 The suite covers framing, every PDU contract, catalog totals, hidden information, lifecycle and mulligans, priority/stack behavior, five effects, phases/combat, two-seat connections, GUI projections/actions/assets, Tk rendering, and real-loopback two-client behavior.
 
-## Specification interpretations
+## Known limitations and RFC deviations
+
+The following limits are intentional and known at submission time:
+
+- Fifteen named effects are implemented, including all five required effects and
+  ten additional spells. Other rules text in the supplied catalog is unavailable;
+  complete card-effect coverage is bonus scope.
+- The schemas and terminal commands expose activated-ability and trigger-choice
+  PDUs, but the supported card subset does not implement a general interpreter for
+  arbitrary activated, optional, or simultaneous triggered abilities.
+- Bonus mechanics such as trample carry-over are not implemented. A blocked
+  attacker assigns damage to its blockers and does not deal excess damage to the
+  defending player.
+- Authentication, TLS, spectators, matchmaking, persistence, and best-of-three
+  matches are not provided. These are either explicitly outside MTGNP 1.0 or
+  identified by the RFC as deployment concerns rather than required baseline work.
+- GUI behavior still requires a final two-machine/manual demonstration on a Python
+  3.12 installation with Tcl/Tk, including reconnection, stale-action recovery,
+  verbose logging, a complete match, and starting a second game on retained sockets.
+
+Where the RFC text is ambiguous or its examples conflict, the implementation uses
+these documented interpretations:
 
 - Formal Section 10 field names and normative prose take precedence over conflicting appendix examples.
 - The setup transition is `MULLIGAN -> UNTAP`; the first player does not draw on turn one.
@@ -126,12 +177,42 @@ The suite covers framing, every PDU contract, catalog totals, hidden information
 - An attacker blocked by multiple creatures assigns damage in submitted order up to remaining lethal toughness; this required baseline does not carry excess damage to the defending player.
 - Combat damage remains marked during End of Combat, is cleared when that step closes, and is cleared again idempotently during Cleanup.
 
-## Work and AI disclosure
+## Work Distribution Matrix
 
-| Contributor/tool | Work performed |
-|---|---|
-| Course team | Supplied MTGNP RFC, fixed card list, requirements, and final review responsibility |
-| Claude | Interpretation and delegation proposal in the supplied `Prompt.pdf` |
-| OpenAI Codex | Repository inspection, approved design, Python implementation, tests, and documentation |
+`P` means Primary developer, `A` means Assisting developer, and `QA` means quality
+assurance. A task may have more than one primary developer when ownership was
+shared. All members share final review responsibility and must be able to explain
+the complete submission.
 
-Rules and protocol behavior were checked against only the three supplied PDFs and executable tests. Scryfall was used solely to verify the 58 supplied names and acquire the bundled display artwork; no external Magic rules or card behavior were imported.
+| Task / feature | Elkan Ainer M. La Madrid | Duncan Joseph B. Marcaida | Jerry King H. Deveza | Jean Rondel R. Ponce |
+|---|:---:|:---:|:---:|:---:|
+| TCP server: connection handling, framing, dispatch | P | A | QA | A |
+| Game lifecycle: Lobby, setup, mulligan | A | P | A | A |
+| Turn and phase engine | A | P | A | A |
+| Priority, stack, and spell resolution | A | P | QA | A |
+| Combat system | P | A | A | A |
+| Desktop/terminal clients and state rendering | P | A | A | QA |
+| PDU serialization/deserialization (all 25 types) | A | QA | A | P |
+| Error handling, heartbeat, and disconnect/reconnect | A | QA | QA | P |
+| Verbose PDU logging on client and server | A | QA | A | P |
+| Automated testing and interoperability checks | A | A | P | A |
+| README, demo guide, and AI disclosure | A | A | P | A |
+| Card catalog, required effects, and GUI bonus integration | P | A | P | A |
+
+The matrix summarizes the team's implementation and review work plus the repository
+commit history; it does not replace each member's duty to understand and demonstrate
+every component.
+
+## AI Usage
+
+| Tool | How it was used | Human verification |
+|---|---|---|
+| Claude | Helped interpret the supplied RFC and prepare an implementation/delegation proposal. | The team compared suggestions with the supplied RFC before adopting them. |
+| OpenAI Codex | Assisted with repository inspection, design iteration, Python implementation, debugging, test creation, GUI refinement, and documentation. | The team reviewed changes against the RFC, ran the automated suite, and retained final responsibility for the code. |
+
+No AI output is treated as a protocol authority. Rules and protocol behavior were
+checked against the supplied course PDFs and executable tests. Scryfall was used
+only to verify the 58 supplied card names and acquire bundled display artwork; no
+external Magic rules or card behavior were imported. Its source URLs and artist
+credits are recorded in `client/assets/cards/manifest.json` and
+`THIRD_PARTY_NOTICES.md`.
