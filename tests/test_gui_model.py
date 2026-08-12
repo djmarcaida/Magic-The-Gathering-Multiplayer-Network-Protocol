@@ -59,8 +59,8 @@ class GuiModelTests(unittest.TestCase):
         catalog = CardCatalog.from_path(ROOT / "cards.json")
         state = self._state()
         state["battlefield"]["p1"] = [
-            {"id": "goblin_guide_001", "summoning_sickness": True},
-            {"id": "mountain_002", "summoning_sickness": True},
+            {"id": "goblin_guide_001", "summoning_sick": True},
+            {"id": "mountain_002", "summoning_sick": True},
         ]
 
         view = GameView.from_state("p1", state, catalog)
@@ -141,7 +141,7 @@ class GuiModelTests(unittest.TestCase):
         }
         for card_id, color in expected.items():
             state = self._state()
-            state["hand"]["p1"] = [card_id]
+            state["hand"] = [card_id]
             card = GameView.from_state("p1", state, catalog).hand[0]
             with self.subTest(card_id=card_id):
                 self.assertEqual(card_border_color(card), color)
@@ -199,12 +199,12 @@ class GuiModelTests(unittest.TestCase):
         state["priority_holder"] = "p1"
 
         for card_id in ("rift_bolt_001", "ponder_001", "rampant_growth_001"):
-            state["hand"]["p1"] = [card_id]
+            state["hand"] = [card_id]
             with self.subTest(card_id=card_id):
                 supported = GameView.from_state("p1", state, catalog)
                 self.assertIn("cast_spell", available_actions(supported, [card_id]))
 
-        state["hand"]["p1"] = ["shock_001"]
+        state["hand"] = ["shock_001"]
         unsupported = GameView.from_state("p1", state, catalog)
         self.assertNotIn("cast_spell", available_actions(unsupported, ["shock_001"]))
 
@@ -219,15 +219,15 @@ class GuiModelTests(unittest.TestCase):
         state["phase"] = "DECLARE_ATTACKERS"
         state["battlefield"]["p1"] = [{
             "id": "grizzly_bears_001", "owner": "p1", "controller": "p1",
-            "tapped": False, "summoning_sickness": True, "damage": 0,
+            "tapped": False, "summoning_sick": True, "damage": 0,
             "power_modifier": 0, "toughness_modifier": 0,
         }, {
             "id": "ornithopter_001", "owner": "p1", "controller": "p1",
-            "tapped": False, "summoning_sickness": False, "damage": 0,
+            "tapped": False, "summoning_sick": False, "damage": 0,
             "power_modifier": 0, "toughness_modifier": 0,
         }, {
             "id": "mountain_002", "owner": "p1", "controller": "p1",
-            "tapped": False, "summoning_sickness": False, "damage": 0,
+            "tapped": False, "summoning_sick": False, "damage": 0,
             "power_modifier": 0, "toughness_modifier": 0,
         }]
         attack_view = GameView.from_state("p1", state, catalog)
@@ -261,7 +261,7 @@ class GuiModelTests(unittest.TestCase):
         state = self._state()
         state["battlefield"]["p2"] = [{
             "id": "ornithopter_001", "owner": "p2", "controller": "p2",
-            "tapped": False, "summoning_sickness": False, "damage": 0,
+            "tapped": False, "summoning_sick": False, "damage": 0,
             "power_modifier": 0, "toughness_modifier": 0,
         }]
         state["stack"] = [{"stack_item_id": "stk_4", "item_type": "SPELL",
@@ -292,13 +292,13 @@ class GuiModelTests(unittest.TestCase):
             "priority_holder": "p1",
             "priority_token": 18,
             "life_totals": {"p1": 20, "p2": 17},
-            "hand": {"p1": ["mountain_001", "lightning_bolt_003"]},
+            "hand": ["mountain_001", "lightning_bolt_003"],
             "hand_counts": {"p1": 2, "p2": 4},
             "library_counts": {"p1": 34, "p2": 35},
             "land_played_this_turn": False,
             "battlefield": {
                 "p1": [{"id": "mountain_002", "owner": "p1", "controller": "p1",
-                         "tapped": True, "summoning_sickness": False, "damage": 0,
+                         "tapped": True, "summoning_sick": False, "damage": 0,
                          "power_modifier": 0, "toughness_modifier": 0}],
                 "p2": [],
             },

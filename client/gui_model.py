@@ -117,30 +117,34 @@ class CardView:
     damage: int = 0
     power_modifier: int = 0
     toughness_modifier: int = 0
+    owner: str = ""
+    controller: str = ""
 
     @classmethod
     def from_instance(cls, instance_id: str, catalog: CardCatalog,
-                      permanent: dict[str, Any] | None = None) -> "CardView":
-        definition = catalog.card(instance_id)
-        permanent = permanent or {}
+                      state: dict[str, Any] | None = None,
+                      controller: str = "") -> "CardView":
+        card = catalog.card(instance_id)
         return cls(
             instance_id=instance_id,
-            base_id=definition.base_id,
-            name=definition.name,
-            card_type=definition.card_type,
-            subtype=definition.subtype,
-            colors=definition.colors,
-            mana_cost=definition.mana_cost,
-            power=definition.power,
-            toughness=definition.toughness,
-            keywords=definition.keywords,
-            effect=definition.effect,
-            tapped=bool(permanent.get("tapped", False)),
-            summoning_sick=(bool(permanent.get("summoning_sickness", False))
-                            and "Creature" in definition.card_type),
-            damage=int(permanent.get("damage", 0)),
-            power_modifier=int(permanent.get("power_modifier", 0)),
-            toughness_modifier=int(permanent.get("toughness_modifier", 0)),
+            base_id=card.base_id,
+            name=card.name,
+            card_type=card.card_type,
+            subtype=card.subtype,
+            colors=card.colors,
+            mana_cost=card.mana_cost,
+            power=card.power,
+            toughness=card.toughness,
+            keywords=card.keywords,
+            effect=card.effect,
+            owner=controller,
+            controller=controller,
+            tapped=bool(state.get("tapped", False)) if state else False,
+            summoning_sick=(bool(state.get("summoning_sick", False))
+                            and "Creature" in card.card_type) if state else False,
+            damage=int(state.get("damage", 0)) if state else 0,
+            power_modifier=int(state.get("power", card.power or 0)) - (card.power or 0) if state and "power" in state else 0,
+            toughness_modifier=int(state.get("toughness", card.toughness or 0)) - (card.toughness or 0) if state and "toughness" in state else 0,
         )
 
 
@@ -206,7 +210,7 @@ class GameView:
         def player_view(pid: str) -> PlayerView:
             permanent_records = state.get("battlefield", {}).get(pid, ())
             battlefield = tuple(
-                CardView.from_instance(item["id"], catalog, item)
+                CardView.from_instance(item["id"], catalog, item, controller=pid)
                 for item in permanent_records
             )
             return PlayerView(
@@ -221,14 +225,14 @@ class GameView:
             )
 
         hand = tuple(
-            CardView.from_instance(card_id, catalog)
-            for card_id in state.get("hand", {}).get(player_id, ())
+            CardView.from_instance(card_id, catalog, controller=player_id)
+            for card_id in state.get("hand", ())
         )
         stack = tuple(
             StackView(
                 stack_item_id=item["stack_item_id"],
                 item_type=item["item_type"],
-                source=CardView.from_instance(item["source"], catalog),
+                source=CardView.from_instance(item["source"], catalog, controller=item["controller"]),
                 controller=item["controller"],
                 targets=tuple(item.get("targets", ())),
             )

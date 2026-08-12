@@ -169,9 +169,12 @@ class GameEngine:
         if self.state is None:
             return []
         targets = seats or tuple(self.state.seats)
-        return [Outbound(seat, self._pdu("GAME_STATE_UPDATE",
-                                        state=self.state.visible_to(self.state.seats[seat])))
-                for seat in targets]
+        updates = []
+        for seat in targets:
+            updates.append(Outbound(seat, self._pdu(
+                "GAME_STATE_UPDATE",
+                state=self.state.visible_to(self.state.seats[seat], self.catalog))))
+        return updates
 
     def _require_token(self, seat: str, pdu: dict[str, object]) -> None:
         if pdu["seq_num"] != self.request_tokens.get(seat):
@@ -304,9 +307,10 @@ class GameEngine:
         player_id = self.player_for_seat(seat)
         player = self.state.players[player_id]
         card_id = pdu["card_id"]
-        if player_id != self.state.active_player or self.state.phase not in {
-                Phase.PRECOMBAT_MAIN, Phase.POSTCOMBAT_MAIN}:
-            raise ActionError("WRONG_PHASE", "lands can be played only in your main phase")
+        if self.state.phase not in {Phase.PRECOMBAT_MAIN, Phase.POSTCOMBAT_MAIN}:
+            raise ActionError("WRONG_PHASE", "lands can only be played during your main phase")
+        if self.state.priority_holder != player_id:
+            raise ActionError("NOT_YOUR_PRIORITY", "player does not hold priority")
         if player.land_played:
             raise ActionError("ILLEGAL_ACTION", "one land may be played each turn")
         if card_id not in player.hand or self.catalog.get(card_id).card_type != "Land":
@@ -323,6 +327,9 @@ class GameEngine:
     def _handle_cast_spell(self, seat: str, pdu: dict[str, object]) -> list[Outbound]:
         assert self.state is not None and self.priority is not None
         player_id = self.player_for_seat(seat)
+        if self.state.priority_holder != player_id:
+            raise ActionError("NOT_YOUR_PRIORITY", "player does not hold priority")
+        self._require_token(seat, pdu)
         player = self.state.players[player_id]
         card_id = pdu["card_id"]
         if card_id not in player.hand:
@@ -485,74 +492,73 @@ class GameEngine:
         return outgoing
 
     def _handle_activate_ability(self, seat: str, pdu: dict[str, object]) -> list[Outbound]:
-        raise ActionError("ILLEGAL_ACTION", "no supported activated ability for this source")
+        player_id = self.player_for_seat(seat)
+        if self.state.priority_holder != player_id:
+            raise ActionError("NOT_YOUR_PRIORITY", "player does not hold priority")
+        raise ActionError("ILLEGAL_ACTION", "this baseline does not implement this PDU type")
 
     def _resolve_top(self) -> list[Outbound]:
         assert self.state is not None and self.priority is not None
         item = self.priority.pop()
         card = self.catalog.get(item.source)
+        base = card.base_id
         result = "RESOLVED"
         changes: list[dict[str, object]] = []
         trigger_pushed: StackItem | None = None
-        if item.item_type == "TRIGGER_ABILITY" and card.base_id == "gray_merchant":
+        if item.item_type == "TRIGGER_ABILITY" and base == "gray_merchant":
             devotion = sum(self.catalog.get(p.card_id).mana_cost.get("B", 0)
                            for p in self.state.players[item.controller].battlefield)
-            opponent = self.state.opponent_of(item.controller)
-            self.state.players[opponent].life -= devotion
-            self.state.players[item.controller].life += devotion
-            changes.append({"kind": "GRAY_MERCHANT", "amount": devotion})
-        elif not self._targets_still_legal(card.base_id, item.targets):
+            if devotion > 0:
+                self.state.players[self.state.opponent_of(item.controller)].life -= devotion
+                self.state.players[item.controller].life += devotion
+                changes.append({"change_type": "GRAY_MERCHANT", "amount": devotion})
+        elif not self._targets_still_legal(base, item.targets):
             result = "FIZZLE"
-        elif card.base_id in {"lightning_bolt", "rift_bolt"}:
+        elif base == "lightning_bolt" or base == "rift_bolt":
             target = item.targets[0]
-            if target in self.state.players:
+            if "player_" in target:
                 self.state.players[target].life -= 3
             else:
                 self.state.permanent(target).damage += 3
-            changes.append({"kind": "DAMAGE", "target": target, "amount": 3})
-        elif card.base_id == "ponder":
-            library = self.state.players[item.controller].library
-            if library:
-                self.state.players[item.controller].hand.append(library.pop())
-                changes.append({"kind": "CARD_DRAWN", "player": item.controller})
+            changes.append({"change_type": "DAMAGE", "target": target, "amount": 3})
+        elif base == "ponder":
+            player = self.state.players[item.controller]
+            if player.library:
+                player.hand.append(player.library.pop())
+            changes.append({"change_type": "CARD_DRAWN", "player": item.controller})
+        elif base == "rampant_growth":
+            land_id = self._fetch_basic_land(item.controller)
+            if land_id:
+                self.state.players[item.controller].battlefield.append(
+                    PermanentState(land_id, item.controller, item.controller, tapped=True))
+                changes.append({"change_type": "ENTERED_BATTLEFIELD", "card_id": land_id, "tapped": True})
             else:
                 result = "FIZZLE"
-        elif card.base_id == "rampant_growth":
-            library = self.state.players[item.controller].library
-            land_idx = next((i for i, cid in enumerate(library) if self.catalog.get(cid).card_type == "Land"), None)
-            if land_idx is not None:
-                land_id = library.pop(land_idx)
-                permanent = PermanentState(land_id, item.controller, item.controller, tapped=True, summoning_sick=False)
-                self.state.players[item.controller].battlefield.append(permanent)
-                changes.append({"kind": "ENTERED_BATTLEFIELD", "card_id": land_id, "tapped": True})
-            else:
-                result = "FIZZLE"
-        elif card.base_id == "counterspell":
+        elif base == "counterspell":
             target_id = item.targets[0]
             target = next((x for x in self.state.stack if x.stack_item_id == target_id), None)
             if target is None:
                 result = "FIZZLE"
             else:
-                self.state.stack.remove(target)
+                self.state.stack = [i for i in self.state.stack if i.stack_item_id != target_id]
                 self.state.players[target.controller].graveyard.append(target.source)
-                changes.append({"kind": "COUNTERED", "stack_item_id": target_id})
-        elif card.base_id == "unsummon":
+                changes.append({"change_type": "COUNTERED", "stack_item_id": target_id})
+        elif base == "unsummon":
             permanent = self.state.permanent(item.targets[0])
-            owner = self.state.players[permanent.owner]
             self.state.players[permanent.controller].battlefield.remove(permanent)
-            owner.hand.append(permanent.card_id)
-            changes.append({"kind": "RETURNED_TO_HAND", "card_id": permanent.card_id})
-        elif card.base_id == "giant_growth":
+            self.state.players[permanent.owner].hand.append(permanent.card_id)
+            changes.append({"change_type": "RETURNED_TO_HAND", "card_id": permanent.card_id})
+        elif base == "giant_growth":
             permanent = self.state.permanent(item.targets[0])
             permanent.power_modifier += 3
             permanent.toughness_modifier += 3
-            changes.append({"kind": "MODIFIED", "card_id": permanent.card_id,
+            changes.append({"change_type": "MODIFIED", "card_id": permanent.card_id,
                             "power": 3, "toughness": 3})
         elif "Creature" in card.card_type or card.card_type in {"Artifact", "Enchantment"}:
-            permanent = PermanentState(item.source, item.controller, item.controller)
-            self.state.players[item.controller].battlefield.append(permanent)
-            changes.append({"kind": "ENTERED_BATTLEFIELD", "card_id": item.source})
-            if card.base_id == "gray_merchant":
+            self.state.players[item.controller].battlefield.append(
+                PermanentState(item.source, item.controller, item.controller, tapped=False))
+            changes.append({"change_type": "ENTERED_BATTLEFIELD", "card_id": item.source})
+            if base == "gray_merchant":
                 trigger_pushed = StackItem(f"stk_{self._stack_counter}", "TRIGGER_ABILITY",
                                            item.source, item.controller, [])
                 self._stack_counter += 1
@@ -560,7 +566,7 @@ class GameEngine:
         if item.item_type == "SPELL" and card.card_type in {"Instant", "Sorcery"}:
             self.state.players[item.controller].graveyard.append(item.source)
         dead = self._state_based_actions()
-        changes.extend({"kind": "DIED", "card_id": card_id} for card_id in dead)
+        changes.extend({"change_type": "DIED", "card_id": card_id} for card_id in dead)
         outgoing = [Outbound(None, self._pdu("STACK_RESOLVE", stack_item_id=item.stack_item_id,
                                              result=result, state_changes=changes))]
         if trigger_pushed is not None:
@@ -698,6 +704,8 @@ class GameEngine:
                         blocker_card = self.catalog.get(blocker_id)
                         lethal = max(0, blocker_card.toughness + blocker.toughness_modifier - blocker.damage)
                         amount = min(remaining, lethal)
+                        if blocker_id == order_ids[-1]:
+                            amount = remaining
                         blocker.damage += amount
                         remaining -= amount
                         events.append({"source": attacker_id, "target": blocker_id, "amount": amount})
@@ -747,6 +755,8 @@ class GameEngine:
                     return [transition, *self._finish(
                         self.state.opponent_of(player.player_id), player.player_id, "DECK_EMPTY")]
                 player.hand.append(player.library.pop())
+                return [transition, *self.snapshot_updates(),
+                        *self._grant_priority(self.state.active_player, open_window=True)]
         return [transition, *self._grant_priority(self.state.active_player, open_window=True)]
 
     def _enter_declaration_phase(self, new: Phase) -> list[Outbound]:

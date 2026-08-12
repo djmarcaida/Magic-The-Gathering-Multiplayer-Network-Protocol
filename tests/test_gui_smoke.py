@@ -372,7 +372,7 @@ class GuiSmokeTests(unittest.TestCase):
             "lifecycle": "PLAYING", "phase": "PRECOMBAT_MAIN", "turn": 1,
             "first_player": "p1", "active_player": "p1", "priority_holder": "p1",
             "priority_token": 7, "life_totals": {"p1": 20, "p2": 20},
-            "hand": {"p1": ["mountain_001", "lightning_bolt_001"]},
+            "hand": ["mountain_001", "lightning_bolt_001"],
             "hand_counts": {"p1": 2, "p2": 5}, "library_counts": {"p1": 41, "p2": 42},
             "battlefield": {"p1": [], "p2": []},
             "graveyard": {"p1": [], "p2": []}, "exile": {"p1": [], "p2": []},

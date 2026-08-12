@@ -113,18 +113,18 @@ class GameState:
                     return permanent
         return None
 
-    def visible_to(self, player_id: str) -> dict[str, object]:
+    def visible_to(self, player_id: str, catalog: Any) -> dict[str, object]:
         def public_permanent(permanent: PermanentState) -> dict[str, object]:
+            card = catalog.get(permanent.card_id)
             d: dict[str, object] = {
                 "id": permanent.card_id,
-                "owner": permanent.owner,
-                "controller": permanent.controller,
                 "tapped": permanent.tapped,
-                "summoning_sickness": permanent.summoning_sick,
-                "damage": permanent.damage,
-                "power_modifier": permanent.power_modifier,
-                "toughness_modifier": permanent.toughness_modifier,
             }
+            if "Creature" in card.card_type:
+                d["damage"] = permanent.damage
+                d["power"] = (card.power or 0) + permanent.power_modifier
+                d["toughness"] = (card.toughness or 0) + permanent.toughness_modifier
+                d["summoning_sick"] = permanent.summoning_sick
             return d
 
         return {
@@ -136,7 +136,7 @@ class GameState:
             "priority_holder": self.priority_holder,
             "priority_token": self.priority_token if self.priority_holder == player_id else None,
             "life_totals": {pid: p.life for pid, p in self.players.items()},
-            "hand": {player_id: list(self.players[player_id].hand)},
+            "hand": list(self.players[player_id].hand),
             "hand_counts": {pid: len(p.hand) for pid, p in self.players.items()},
             "library_counts": {pid: len(p.library) for pid, p in self.players.items()},
             "land_played_this_turn": self.players[self.active_player].land_played,
