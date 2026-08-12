@@ -6,7 +6,7 @@ OWN-WORLD: Charcoal and felt surfaces, warm parchment headings, teal priority cu
 STORY: Connect, scan each player's resources at their battlefield, select a hand card, act through the protocol, and see the authoritative response.
 FIRST VIEWPORT: Flowing phase strip above two battlefields and stack, fanned hand anchored below, contextual actions and history right.
 FORM: Quiet Tabletop, fourth grounded direction, seed 1dc2138b.
-FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, and DESIGN.md
+FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review and verdict.
 """
 
 from __future__ import annotations

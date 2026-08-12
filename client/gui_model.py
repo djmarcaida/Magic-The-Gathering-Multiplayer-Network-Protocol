@@ -197,7 +197,7 @@ class StackView:
 class GameView:
     """
     Complete read-only projection of the visible game state.
-    
+
     Used by the GUI layer to render the tabletop and determine which
     actions are legally available to the player.
     """
