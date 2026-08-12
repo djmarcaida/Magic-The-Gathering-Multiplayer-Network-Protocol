@@ -219,8 +219,11 @@ class GameEngine:
         return self._finish(self.state.opponent_of(loser), loser, "CONCEDE")
 
     def _finish(self, winner: str, loser: str, reason: str) -> list[Outbound]:
-        outgoing = [Outbound(None, self._pdu("GAME_OVER", winner_id=winner,
-                                             loser_id=loser, reason=reason))]
+        outgoing = []
+        if self.state is not None:
+            outgoing.extend(self.snapshot_updates())
+        outgoing.append(Outbound(None, self._pdu("GAME_OVER", winner_id=winner,
+                                                 loser_id=loser, reason=reason)))
         self.state = None
         self.ready_by_seat.clear()
         self.request_tokens.clear()

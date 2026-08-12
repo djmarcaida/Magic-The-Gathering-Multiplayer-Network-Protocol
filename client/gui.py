@@ -1149,6 +1149,7 @@ class GameApplication:
             add("Pass priority", lambda: self._send("pass_priority", ()), accent=True)
         selected_hand = [card for card in view.hand if card.instance_id in self._selected]
         selected_attackers = selected_legal_attackers(view, self._selected)
+        selected_blockers = selected_legal_blockers(view, self._selected)
         if "play_land" in actions:
             add("Play selected land", lambda: self._send(
                 "play_land", (selected_hand[0].instance_id,)))
@@ -1158,12 +1159,16 @@ class GameApplication:
             add("Discard selected", lambda: self._send(
                 "discard", tuple(card.instance_id for card in selected_hand)))
         if "declare_attackers" in actions:
-            add("Declare selected attackers", lambda: self._send(
-                "declare_attackers", selected_attackers))
+            attacker_count = len(selected_attackers)
+            label = f"Declare {attacker_count} selected attacker{'s' if attacker_count > 1 else ''}"
+            add(label, lambda: self._send(
+                "declare_attackers", selected_attackers), accent=True)
         if "declare_no_attackers" in actions:
             add("Declare no attackers", lambda: self._send("declare_attackers", ()))
         if "declare_blockers" in actions:
-            add("Declare selected blockers", self._declare_blockers)
+            blocker_count = len(selected_blockers)
+            label = f"Declare {blocker_count} selected blocker{'s' if blocker_count > 1 else ''}"
+            add(label, self._declare_blockers, accent=True)
         if "declare_no_blockers" in actions:
             add("Declare no blockers", lambda: self._send(
                 "declare_blockers", (), {"blockers": {}}))
@@ -1429,6 +1434,13 @@ class GameApplication:
         elif pdu_type == "GAME_OVER":
             self.game_over = True
             self.priority_var.set("Game over")
+            loser_id = pdu.get("loser_id")
+            reason = pdu.get("reason")
+            if reason == "LIFE_ZERO" and loser_id:
+                if loser_id == self.player_id:
+                    self.resource_life_var.set("0")
+                else:
+                    self.opponent_resource_vars["life"].set("0")
             self.status_var.set("Game over. Both players may ready the same decks for another game.")
             if self.current_view is not None:
                 self._render_actions(self.current_view)
